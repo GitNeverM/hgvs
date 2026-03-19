@@ -1413,7 +1413,7 @@ class HGVSName(object):
         """
         Parse a HGVS genomic name.
 
-        Som examples include:
+        Some examples include:
           Substitution: 1000100A>T
           Indel: 1000100_1000102delATG
         """
@@ -1794,7 +1794,7 @@ class HGVSName(object):
         """
         Generate HGVS genomic allele.
 
-        Som examples include:
+        Some examples include:
           Substitution: 1000100A>T
           Indel: 1000100_1000102delATG
         """

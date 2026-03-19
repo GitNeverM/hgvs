@@ -947,8 +947,9 @@ class TestNewProteinTypeFormatting:
     def test_round_trip(self, hgvs_str):
         """Parse then format should reproduce the original string."""
         n = HGVSName(hgvs_str)
-        assert n.format() == hgvs_str, (
-            "Round-trip failed for %r: got %r" % (hgvs_str, n.format()))
+        formatted = n.format()
+        assert formatted == hgvs_str, (
+            "Round-trip failed for %r: got %r" % (hgvs_str, formatted))
 
     @pytest.mark.parametrize('hgvs_str', [
         'p.Arg97fs',
