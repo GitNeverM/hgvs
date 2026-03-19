@@ -135,16 +135,23 @@ class TranscriptLookup(object):
     """A lightweight, policy-driven transcript store.
 
     Supports lookup by full versioned name (``NM_004380.2``), by bare name
-    (``NM_004380``), and optionally by MANE Select status when metadata is
-    available.
+    (``NM_004380``), by Ensembl transcript accession (``ENST00000123456`` or
+    ``ENST00000123456.1``), and optionally by MANE Select status when metadata
+    is available.
 
     Usage::
 
         store = TranscriptLookup()
         store.load_refgene(open('hg38_refGene.txt'))
-        tx = store.get('NM_004380')        # version-independent
-        tx = store.get('NM_004380.2')      # exact version
-        tx = store.get_mane_select('IDH1') # MANE Select for gene
+        tx = store.get('NM_004380')            # version-independent
+        tx = store.get('NM_004380.2')          # exact version
+        tx = store.get_mane_select('IDH1')     # MANE Select for gene
+
+    After loading a MANE summary, Ensembl accessions are also accepted::
+
+        store.load_mane_summary(open('MANE.GRCh38.vX.summary.txt'))
+        tx = store.get('ENST00000415669')      # bare Ensembl ID
+        tx = store.get('ENST00000415669.8')    # versioned Ensembl ID
 
     Loading GRCh38 RefSeq transcripts
     ----------------------------------
@@ -169,6 +176,9 @@ class TranscriptLookup(object):
         self._by_full_name = {}
         # Maps bare name → list of Transcripts (highest version first)
         self._by_name = {}
+        # Maps Ensembl accession (versioned and bare) → Transcript
+        # Populated by load_mane_summary().
+        self._by_ensembl = {}
 
     def add(self, transcript):
         """Add a :class:`~pyhgvs.models.Transcript` to the store."""
@@ -178,6 +188,25 @@ class TranscriptLookup(object):
         self._by_name[transcript.name].sort(
             key=lambda t: t.version if t.version is not None else -1,
             reverse=True)
+
+    def _index_ensembl(self, ensembl_nuc, transcript):
+        """Register *transcript* under its Ensembl accession.
+
+        Both the full versioned accession (``ENST00000123456.1``) and the
+        bare accession (``ENST00000123456``) are stored.
+        """
+        if not ensembl_nuc:
+            return
+        self._by_ensembl[ensembl_nuc] = transcript
+        bare = ensembl_nuc.split('.')[0]
+        if bare != ensembl_nuc:
+            # Register the bare (unversioned) form only if no mapping exists
+            # yet for that bare ID.  First-registered entry wins so that
+            # callers who load a single MANE summary get a stable result.
+            existing = self._by_ensembl.get(bare)
+            if existing is None:
+                self._by_ensembl[bare] = transcript
+            # else: keep the existing mapping
 
     def load_refgene(self, infile, genome_build=None):
         """Load transcripts from a RefGene (GenePred extension) file.
@@ -201,6 +230,9 @@ class TranscriptLookup(object):
 
         Call *after* :meth:`load_refgene` so that transcripts are already
         present in the store.
+
+        After this call, transcripts can also be retrieved by their Ensembl
+        accession via :meth:`get`.
 
         The MANE summary TSV (available from NCBI) has at least these columns:
         ``#NCBI_GeneID``, ``Ensembl_Gene``, ``HGNC_ID``, ``symbol``,
@@ -248,13 +280,20 @@ class TranscriptLookup(object):
                 tx.is_mane_plus_clinical = is_plus
                 if ensembl_nuc:
                     tx.ensembl_transcript = ensembl_nuc
+                    # Index by Ensembl accession so callers can look up
+                    # transcripts using ENST IDs after loading MANE data.
+                    self._index_ensembl(ensembl_nuc, tx)
 
     def get(self, name, policy='latest'):
         """Retrieve a transcript by name.
 
+        Supports RefSeq accessions (``NM_004380``, ``NM_004380.2``) and
+        Ensembl transcript accessions (``ENST00000123456``,
+        ``ENST00000123456.1``).  Ensembl lookup is only available after
+        :meth:`load_mane_summary` has been called.
+
         Args:
-            name: Transcript accession, with or without version suffix
-                (e.g. ``'NM_004380'`` or ``'NM_004380.2'``).
+            name: Transcript accession, with or without version suffix.
             policy: Lookup policy when the version is not specified:
 
                 - ``'latest'`` (default): return the highest-version
@@ -267,6 +306,22 @@ class TranscriptLookup(object):
         Returns:
             A :class:`~pyhgvs.models.Transcript` or ``None``.
         """
+        # ------------------------------------------------------------------
+        # Ensembl transcript lookup (ENST accessions)
+        # ------------------------------------------------------------------
+        if name.startswith('ENST'):
+            tx = self._by_ensembl.get(name)
+            if tx is not None:
+                return tx
+            if policy == 'exact':
+                return None
+            # Try bare (without version)
+            bare = name.split('.')[0]
+            return self._by_ensembl.get(bare)
+
+        # ------------------------------------------------------------------
+        # RefSeq / generic lookup
+        # ------------------------------------------------------------------
         # Exact versioned lookup (e.g. 'NM_004380.2')
         if '.' in name:
             tx = self._by_full_name.get(name)
@@ -294,6 +349,25 @@ class TranscriptLookup(object):
         # 'latest'
         return candidates[0]
 
+    def get_by_ensembl(self, ensembl_id):
+        """Return the transcript associated with an Ensembl transcript ID.
+
+        Accepts both versioned (``ENST00000123456.1``) and unversioned
+        (``ENST00000123456``) identifiers.  Returns ``None`` when no match
+        is found.
+
+        .. note::
+            Ensembl mappings are populated by :meth:`load_mane_summary`.
+            Only transcripts present in the loaded RefGene data **and**
+            referenced in the MANE summary are reachable via this method.
+        """
+        tx = self._by_ensembl.get(ensembl_id)
+        if tx is not None:
+            return tx
+        # Try without version
+        bare = ensembl_id.split('.')[0]
+        return self._by_ensembl.get(bare)
+
     def get_mane_select(self, gene_symbol):
         """Return the MANE Select transcript for *gene_symbol*, or ``None``.
 
@@ -306,6 +380,8 @@ class TranscriptLookup(object):
         return None
 
     def __contains__(self, name):
+        if name.startswith('ENST'):
+            return name in self._by_ensembl or name.split('.')[0] in self._by_ensembl
         return name in self._by_full_name or name in self._by_name
 
     def __len__(self):
