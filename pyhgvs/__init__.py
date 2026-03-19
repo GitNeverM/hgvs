@@ -407,22 +407,105 @@ class HGVSRegex(object):
     # over bare '?' when both could match.
     PEP_EXTRA = r"(?P<extra>(?:\?fs|=|\?|fs)?)"
 
-    # Peptide allele syntax
+    # ---------------------------------------------------------------------------
+    # Extended peptide allele building blocks for HGVS stable recommendations
+    # ---------------------------------------------------------------------------
+
+    # Frameshift terminator suffix: Ter23 / *23 / Ter? / *?  (optional)
+    # Captured into group 'ter_pos' (just the number or '?', not the Ter/*)
+    _PEP_FS_TER = r"(?:(?:Ter|\*)(?P<ter_pos>\d+|\?))?"
+
+    # Multi-amino-acid sequence used in insertion / delins alt alleles.
+    # Matches one or more PEP tokens (greedy), or a bare stop codon (*),
+    # or an unknown-count bracket such as [5] or [?].
+    _PEP_SEQ = r"(?:" + PEP + r")+"
+    _PEP_INS_SEQ = r"(?P<alt>" + _PEP_SEQ + r"|\[(?:\d+|\?)\])"
+    _PEP_DELINS_SEQ = r"(?P<alt>" + _PEP_SEQ + r")"
+
+    # Extension offset for N-terminal extensions: -5, +5, ?
+    _PEP_EXT_OFFSET = r"(?P<ext_offset>-?\d+|\?)"
+
+    # New amino acid and optional new-stop for C-terminal extensions
+    _PEP_EXT_AA = r"(?P<ext_aa>" + PEP + r")"
+    _PEP_EXT_TER = r"(?:(?:Ter|\*)(?P<ext_ter_pos>\d+|\?))?"
+
+    # Peptide allele syntax — ordered from most-specific to most-general so
+    # that longer / more-constrained patterns match before the catch-all ones.
     PEP_ALLELE = [
-        # No peptide change
-        # Example: Glu1161=
+        # === Frameshift (must precede substitution / no-change) ===
+        # With new first amino acid:
+        #   p.Arg97ProfsTer23  p.Arg97Profs*23  p.Ile327Argfs*?
+        (PEP_REF + COORD_START
+         + r"(?P<new_aa>" + PEP + r")fs"
+         + _PEP_FS_TER),
+        # Without new amino acid:
+        #   p.Arg97fs  p.Arg97fsTer23  p.Arg97fs*?
+        (PEP_REF + COORD_START + r"fs" + _PEP_FS_TER),
+
+        # === No change (synonymous) ===
+        # Example: Glu1161=  /  E1161=
         PEP_REF + COORD_START + PEP_EXTRA,
 
-        # Peptide change
-        # Example: Glu1161Ser  /  R132H
+        # === Substitution (single residue) ===
+        # Example: Glu1161Ser  /  R132H  /  Arg132*
         PEP_REF + COORD_START + PEP_ALT + PEP_EXTRA,
 
-        # Peptide indel
+        # === Range change (backward-compatible: covers range frameshifts, etc.) ===
         # Example: Glu1161_Ser1164?fs
-        "(?P<delins>" + PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END +
-        PEP_EXTRA + ")",
-        "(?P<delins>" + PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END +
-        PEP_ALT + PEP_EXTRA + ")",
+        ("(?P<delins>"
+         + PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END
+         + PEP_EXTRA + ")"),
+        ("(?P<delins>"
+         + PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END
+         + PEP_ALT + PEP_EXTRA + ")"),
+
+        # === Deletion ===
+        # Single residue: p.Lys23del
+        "(?P<pep_del>" + PEP_REF + COORD_START + r"del)",
+        # Range:          p.Lys23_Val25del
+        ("(?P<pep_del>"
+         + PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END
+         + r"del)"),
+
+        # === Duplication ===
+        # Single residue: p.Lys23dup
+        "(?P<pep_dup>" + PEP_REF + COORD_START + r"dup)",
+        # Range:          p.Lys23_Val25dup
+        ("(?P<pep_dup>"
+         + PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END
+         + r"dup)"),
+
+        # === Insertion ===
+        # p.Lys23_Leu24insArgSerGln  /  p.Lys23_Leu24ins*  /  p.Lys23_Leu24ins[5]
+        ("(?P<pep_ins>"
+         + PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END
+         + r"ins" + _PEP_INS_SEQ + ")"),
+
+        # === Deletion-Insertion (delins) ===
+        # Single residue: p.Cys28delinsTrpVal
+        ("(?P<pep_delins>"
+         + PEP_REF + COORD_START
+         + r"delins" + _PEP_DELINS_SEQ + ")"),
+        # Range:          p.Cys28_Lys29delinsTrp
+        ("(?P<pep_delins>"
+         + PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END
+         + r"delins" + _PEP_DELINS_SEQ + ")"),
+
+        # === Extension ===
+        # N-terminal: p.Met1ext-5  /  p.Met1ext?
+        ("(?P<pep_ext>" + PEP_REF + COORD_START
+         + r"ext" + _PEP_EXT_OFFSET + ")"),
+        # C-terminal: p.*110GlnextTer17  /  p.Ter110GlnextTer17
+        ("(?P<pep_ext>"
+         + PEP_REF + COORD_START + _PEP_EXT_AA
+         + r"ext" + _PEP_EXT_TER + ")"),
+
+        # === Repeated sequences ===
+        # Single residue: p.Ala2[10]  /  p.Ala2[?]
+        PEP_REF + COORD_START + r"\[(?P<rep_count>\d+|\?)\]",
+        # Range:          p.Ala2_Pro5[10]
+        (PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END
+         + r"\[(?P<rep_count>\d+|\?)\]"),
     ]
 
     PEP_ALLELE_REGEXES = [re.compile("^" + regex + "$")
@@ -1149,45 +1232,179 @@ class HGVSName(object):
         Parse a HGVS protein name.
 
         Both one-letter (e.g. ``R132H``) and three-letter (e.g.
-        ``Arg132His``) amino acid notation are accepted.  Amino acid alleles
-        are stored exactly as they appear in the input string; use
+        ``Arg132His``) amino acid notation are accepted per the HGVS stable
+        recommendations (https://hgvs-nomenclature.org/stable/).  Amino acid
+        alleles are stored exactly as they appear in the input string; use
         :meth:`normalize` to obtain a canonical three-letter representation.
 
-        Some examples include:
-          No change:    Glu1161=   or  E1161=
-          Change:       Glu1161Ser or  R132H
-          Frameshift:   Glu1161_Ser1164?fs
+        Supported categories:
+          Substitution:        Glu1161Ser / R132H / Arg132*
+          No change:           Glu1161=
+          Deletion:            Lys23del / Lys23_Val25del
+          Duplication:         Lys23dup / Lys23_Val25dup
+          Insertion:           Lys23_Leu24insArgSerGln
+          Deletion-Insertion:  Cys28delinsTrpVal / Cys28_Lys29delinsTrp
+          Frameshift:          Arg97fs / Arg97ProfsTer23 / Arg97Profs*23
+          Extension (N-term):  Met1ext-5
+          Extension (C-term):  *110GlnextTer17
+          Repeated sequences:  Ala2[10] / Ala2_Pro5[10]
+          Predicted forms:     (Arg97fs) / (Lys23del)  [parens stripped]
+          Range change (legacy): Glu1161_Ser1164?fs
         """
+        # Handle predicted / uncertain consequence form — strip outer parens.
+        # p.(Arg97fs) and p.(Lys23del) are parsed identically to the bare form;
+        # the predicted nature is currently not stored in a dedicated field.
+        if details.startswith('(') and details.endswith(')'):
+            details = details[1:-1]
+
         for regex in HGVSRegex.PEP_ALLELE_REGEXES:
             match = re.match(regex, details)
             if match:
                 groups = match.groupdict()
 
-                # Parse mutation type.
-                if groups.get('delins'):
-                    self.mutation_type = 'delins'
-                else:
-                    self.mutation_type = '>'
+                # ----------------------------------------------------------------
+                # Determine mutation type and extract fields based on which
+                # named groups are present in this particular regex pattern.
+                # ----------------------------------------------------------------
 
-                # Parse coordinates.
-                self.start = int(groups.get('start'))
-                if groups.get('end'):
-                    self.end = int(groups.get('end'))
-                else:
+                if 'new_aa' in groups:
+                    # Frameshift with a new first amino acid.
+                    # e.g. Arg97ProfsTer23 / Arg97Profs*23 / Ile327Argfs*?
+                    self.mutation_type = 'fs'
+                    self.ref_allele = groups.get('ref', '')
+                    self.start = int(groups.get('start'))
                     self.end = self.start
-
-                # Parse alleles.
-                self.ref_allele = groups.get('ref', '')
-                if groups.get('ref2'):
-                    self.ref2_allele = groups.get('ref2')
-                    self.alt_allele = groups.get('alt', '')
-                else:
-                    # If alt is not given, assume matching with ref
                     self.ref2_allele = self.ref_allele
-                    self.alt_allele = groups.get(
-                        'alt', self.ref_allele)
+                    self.alt_allele = groups.get('new_aa', '')
+                    ter_pos = groups.get('ter_pos')
+                    self.pep_extra = 'fsTer' + ter_pos if ter_pos else 'fs'
 
-                self.pep_extra = groups.get('extra') or ''
+                elif 'ter_pos' in groups:
+                    # Frameshift without a new amino acid.
+                    # e.g. Arg97fs / Arg97fsTer23 / Arg97fs*?
+                    self.mutation_type = 'fs'
+                    self.ref_allele = groups.get('ref', '')
+                    self.start = int(groups.get('start'))
+                    self.end = self.start
+                    self.ref2_allele = self.ref_allele
+                    self.alt_allele = ''
+                    ter_pos = groups.get('ter_pos')
+                    self.pep_extra = 'fsTer' + ter_pos if ter_pos else 'fs'
+
+                elif 'pep_del' in groups:
+                    # Deletion: Lys23del / Lys23_Val25del
+                    self.mutation_type = 'del'
+                    self.ref_allele = groups.get('ref', '')
+                    self.start = int(groups.get('start'))
+                    if groups.get('end'):
+                        self.end = int(groups.get('end'))
+                        self.ref2_allele = groups.get('ref2', '')
+                    else:
+                        self.end = self.start
+                        self.ref2_allele = self.ref_allele
+                    self.alt_allele = ''
+                    self.pep_extra = ''
+
+                elif 'pep_dup' in groups:
+                    # Duplication: Lys23dup / Lys23_Val25dup
+                    self.mutation_type = 'dup'
+                    self.ref_allele = groups.get('ref', '')
+                    self.start = int(groups.get('start'))
+                    if groups.get('end'):
+                        self.end = int(groups.get('end'))
+                        self.ref2_allele = groups.get('ref2', '')
+                    else:
+                        self.end = self.start
+                        self.ref2_allele = self.ref_allele
+                    self.alt_allele = self.ref_allele  # duplicated == ref
+                    self.pep_extra = ''
+
+                elif 'pep_ins' in groups:
+                    # Insertion: Lys23_Leu24insArgSerGln
+                    self.mutation_type = 'ins'
+                    self.ref_allele = groups.get('ref', '')
+                    self.start = int(groups.get('start'))
+                    self.end = int(groups.get('end'))
+                    self.ref2_allele = groups.get('ref2', '')
+                    self.alt_allele = groups.get('alt', '')
+                    self.pep_extra = ''
+
+                elif 'pep_delins' in groups:
+                    # Deletion-Insertion: Cys28delinsTrpVal / Cys28_Lys29delinsTrp
+                    self.mutation_type = 'delins'
+                    self.ref_allele = groups.get('ref', '')
+                    self.start = int(groups.get('start'))
+                    if groups.get('end'):
+                        self.end = int(groups.get('end'))
+                        self.ref2_allele = groups.get('ref2', '')
+                    else:
+                        self.end = self.start
+                        self.ref2_allele = self.ref_allele
+                    self.alt_allele = groups.get('alt', '')
+                    self.pep_extra = ''
+
+                elif 'pep_ext' in groups:
+                    # Extension (N-terminal or C-terminal)
+                    self.mutation_type = 'ext'
+                    self.ref_allele = groups.get('ref', '')
+                    self.start = int(groups.get('start'))
+                    self.end = self.start
+                    self.ref2_allele = self.ref_allele
+                    if 'ext_offset' in groups:
+                        # N-terminal: Met1ext-5
+                        self.alt_allele = ''
+                        ext_offset = groups.get('ext_offset') or ''
+                        self.pep_extra = 'ext' + ext_offset
+                    else:
+                        # C-terminal: *110GlnextTer17
+                        self.alt_allele = groups.get('ext_aa', '')
+                        ext_ter_pos = groups.get('ext_ter_pos')
+                        self.pep_extra = ('extTer' + ext_ter_pos
+                                          if ext_ter_pos else 'ext')
+
+                elif 'rep_count' in groups:
+                    # Repeated sequences: Ala2[10] / Ala2_Pro5[10]
+                    self.mutation_type = 'rep'
+                    self.ref_allele = groups.get('ref', '')
+                    self.start = int(groups.get('start'))
+                    if groups.get('end'):
+                        self.end = int(groups.get('end'))
+                        self.ref2_allele = groups.get('ref2', '')
+                    else:
+                        self.end = self.start
+                        self.ref2_allele = self.ref_allele
+                    self.alt_allele = ''
+                    rep_count = groups.get('rep_count', '')
+                    self.pep_extra = '[' + rep_count + ']'
+
+                elif groups.get('delins'):
+                    # Legacy range change: Glu1161_Ser1164?fs
+                    self.mutation_type = 'delins'
+                    self.ref_allele = groups.get('ref', '')
+                    self.start = int(groups.get('start'))
+                    self.end = int(groups.get('end'))
+                    if groups.get('ref2'):
+                        self.ref2_allele = groups.get('ref2')
+                        self.alt_allele = groups.get('alt', '')
+                    else:
+                        self.ref2_allele = self.ref_allele
+                        self.alt_allele = groups.get('alt', self.ref_allele)
+                    self.pep_extra = groups.get('extra') or ''
+
+                else:
+                    # Substitution or no-change: Glu1161Ser / R132H / Glu1161=
+                    self.mutation_type = '>'
+                    self.ref_allele = groups.get('ref', '')
+                    self.start = int(groups.get('start'))
+                    self.end = self.start
+                    if groups.get('ref2'):
+                        self.ref2_allele = groups.get('ref2')
+                        self.alt_allele = groups.get('alt', '')
+                    else:
+                        self.ref2_allele = self.ref_allele
+                        self.alt_allele = groups.get('alt', self.ref_allele)
+                    self.pep_extra = groups.get('extra') or ''
+
                 return
 
         raise HGVSParseError(details, 'protein allele')
@@ -1376,15 +1593,93 @@ class HGVSName(object):
                 If ``False``, single-letter codes are used instead
                 (e.g. ``E``, ``S``).
 
-        Some examples include:
-          No change: Glu1161=  /  E1161=
-          Change:    Glu1161Ser  /  R132H
-          Frameshift: Glu1161_Ser1164?fs
+        Supported categories (HGVS stable recommendations):
+          Substitution:        Glu1161Ser  /  R132H
+          No change:           Glu1161=
+          Deletion:            Lys23del  /  Lys23_Val25del
+          Duplication:         Lys23dup  /  Lys23_Val25dup
+          Insertion:           Lys23_Leu24insArgSerGln
+          Deletion-Insertion:  Cys28delinsTrpVal  /  Cys28_Lys29delinsTrp
+          Frameshift:          Arg97fs  /  Arg97ProfsTer23
+          Extension:           Met1ext-5  /  *110GlnextTer17
+          Repeated sequences:  Ala2[10]
+          Range change (legacy): Glu1161_Ser1164?fs
         """
 
         def _fmt(allele):
             """Normalise *allele* according to the requested notation."""
             return normalize_aa_allele(allele, use_3letter=use_3letter)
+
+        def _norm_ter(s):
+            """Convert Ter ↔ * inside a suffix string based on use_3letter."""
+            if not s:
+                return s
+            if use_3letter:
+                return s.replace('*', 'Ter')
+            else:
+                return s.replace('Ter', '*')
+
+        # --- New protein mutation types (HGVS stable) ---
+
+        if self.mutation_type == 'fs':
+            # Frameshift: Arg97fs / Arg97ProfsTer23 / Arg97Profs*23
+            result = _fmt(self.ref_allele) + str(self.start)
+            if self.alt_allele:
+                result += _fmt(self.alt_allele)
+            result += _norm_ter(self.pep_extra or 'fs')
+            return result
+
+        if self.mutation_type == 'del':
+            # Deletion: Lys23del / Lys23_Val25del
+            result = _fmt(self.ref_allele) + str(self.start)
+            if self.start != self.end:
+                result += '_' + _fmt(self.ref2_allele) + str(self.end)
+            return result + 'del'
+
+        if self.mutation_type == 'dup':
+            # Duplication: Lys23dup / Lys23_Val25dup
+            result = _fmt(self.ref_allele) + str(self.start)
+            if self.start != self.end:
+                result += '_' + _fmt(self.ref2_allele) + str(self.end)
+            return result + 'dup'
+
+        if self.mutation_type == 'ins':
+            # Insertion: Lys23_Leu24insArgSerGln
+            return (_fmt(self.ref_allele) + str(self.start)
+                    + '_' + _fmt(self.ref2_allele) + str(self.end)
+                    + 'ins' + _fmt(self.alt_allele))
+
+        if self.mutation_type == 'rep':
+            # Repeated sequences: Ala2[10] / Ala2_Pro5[10]
+            result = _fmt(self.ref_allele) + str(self.start)
+            if self.start != self.end:
+                result += '_' + _fmt(self.ref2_allele) + str(self.end)
+            return result + (self.pep_extra or '')
+
+        if self.mutation_type == 'ext':
+            # Extension: Met1ext-5 (N-term) / *110GlnextTer17 (C-term)
+            result = _fmt(self.ref_allele) + str(self.start)
+            if self.alt_allele:
+                result += _fmt(self.alt_allele)
+            return result + _norm_ter(self.pep_extra or 'ext')
+
+        if self.mutation_type == 'delins':
+            # Deletion-Insertion (both protein delins and legacy range change)
+            if self.start != self.end:
+                base = (_fmt(self.ref_allele) + str(self.start)
+                        + '_' + _fmt(self.ref2_allele) + str(self.end))
+                if self.alt_allele:
+                    # New range delins: Cys28_Lys29delinsTrp
+                    return base + 'delins' + _fmt(self.alt_allele)
+                else:
+                    # Legacy range change: Glu1161_Ser1164?fs
+                    return base + (self.pep_extra or '')
+            else:
+                # Single-residue delins: Cys28delinsTrpVal
+                return (_fmt(self.ref_allele) + str(self.start)
+                        + 'delins' + _fmt(self.alt_allele))
+
+        # --- Original logic for substitution and no-change ---
 
         if (self.start == self.end and
                 self.ref_allele == self.ref2_allele == self.alt_allele):
@@ -1393,7 +1688,7 @@ class HGVSName(object):
             pep_extra = self.pep_extra if self.pep_extra else '='
             return _fmt(self.ref_allele) + str(self.start) + pep_extra
 
-        elif (self.start == self.end and
+        if (self.start == self.end and
                 self.ref_allele == self.ref2_allele and
                 self.ref_allele != self.alt_allele):
             # Change.
@@ -1401,15 +1696,13 @@ class HGVSName(object):
             return (_fmt(self.ref_allele) + str(self.start) +
                     _fmt(self.alt_allele) + (self.pep_extra or ''))
 
-        elif self.start != self.end:
-            # Range change.
-            # Example: Glu1161_Ser1164?fs
+        if self.start != self.end:
+            # Fallback range change (manually-constructed names).
             return (_fmt(self.ref_allele) + str(self.start) + '_' +
                     _fmt(self.ref2_allele) + str(self.end) +
                     (self.pep_extra or ''))
 
-        else:
-            raise HGVSFormattingError('cannot format protein name with these fields')
+        raise HGVSFormattingError('cannot format protein name with these fields')
 
     def normalize(self):
         """Return a new :class:`HGVSName` with amino acid alleles normalised to
@@ -1431,6 +1724,10 @@ class HGVSName(object):
         norm.ref_allele = normalize_aa_allele(self.ref_allele, use_3letter=True)
         norm.ref2_allele = normalize_aa_allele(self.ref2_allele, use_3letter=True)
         norm.alt_allele = normalize_aa_allele(self.alt_allele, use_3letter=True)
+        # Normalise Ter/Star notation inside pep_extra so that equivalence
+        # comparisons treat p.Arg97Profs*23 and p.Arg97ProfsTer23 as equal.
+        if self.pep_extra:
+            norm.pep_extra = self.pep_extra.replace('*', 'Ter')
         return norm
 
     def equivalent(self, other):
