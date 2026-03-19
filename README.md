@@ -296,8 +296,25 @@ tx = store.get('NM_004380.2')        # exact version
 tx = store.get('NM_004380', policy='mane_select')  # prefer MANE Select
 tx = store.get('NM_004380', policy='exact')        # versioned only
 
+# Ensembl transcript lookup (available after load_mane_summary)
+tx = store.get('ENST00000415669')    # bare Ensembl ID
+tx = store.get('ENST00000415669.8')  # versioned Ensembl ID
+
 # Direct MANE Select lookup by gene symbol
 mane_tx = store.get_mane_select('IDH1')
+```
+
+After calling `load_mane_summary`, Ensembl transcript accessions (``ENST…``)
+become valid lookup keys because the MANE summary file maps each RefSeq
+transcript to its Ensembl counterpart.  Both versioned (``ENST00000415669.8``)
+and bare (``ENST00000415669``) forms are accepted.
+
+```python
+# Use an Ensembl transcript with parse_hgvs_name
+chrom, start, ref, alt = hgvs.parse_hgvs_name(
+    'ENST00000357654:c.2207A>C',
+    genome,
+    get_transcript=store.get)
 ```
 
 The `TranscriptLookup` object can be used as the `get_transcript` callback in
@@ -311,6 +328,29 @@ chrom, start, ref, alt = hgvs.parse_hgvs_name(
     genome,
     get_transcript=store.get)
 ```
+
+### Duplication (dup) internal representation
+
+When a `dup` variant is parsed (e.g. `c.101dupA` or `c.1000_1002dupATG`),
+the library stores:
+
+| Field | Value |
+|---|---|
+| `mutation_type` | `'dup'` |
+| `ref_allele` | The duplicated sequence (`'A'`, `'ATG'`, or `''` if absent) |
+| `alt_allele` | Same as `ref_allele` (the inserted sequence) |
+
+`get_ref_alt()` returns `('', ref_allele)` — an empty reference and the
+duplicated sequence as the alternate — representing the event semantically
+as a pure insertion.  This is then used by `get_vcf_allele()` to build the
+left-padded VCF allele pair.
+
+When no explicit sequence is given (e.g. `c.101dup`), both `ref_allele` and
+`alt_allele` are empty strings and the VCF allele cannot be computed without
+a genome reference.
+
+Inversions (`c.100_102inv`, `g.100_102inv`) are now also parsed and
+formatted correctly.
 
 ## Tests
 

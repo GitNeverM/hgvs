@@ -334,6 +334,7 @@ class HGVSRegex(object):
     INS = "(?P<mutation_type>ins)"
     DEL = "(?P<mutation_type>del)"
     DUP = "(?P<mutation_type>dup)"
+    INV = "(?P<mutation_type>inv)"
 
     # Simple coordinate syntax
     COORD_START = r"(?P<start>\d+)"
@@ -370,6 +371,9 @@ class HGVSRegex(object):
         CDNA_RANGE + DUP + DNA_REF,
         CDNA_RANGE + DEL,
         CDNA_RANGE + DUP,
+
+        # Inversion (range required; sequence is implied to be complement)
+        CDNA_RANGE + INV,
 
         # Indels
         "(?P<delins>" + CDNA_START + 'del' + DNA_REF + 'ins' + DNA_ALT + ")",
@@ -445,6 +449,9 @@ class HGVSRegex(object):
         COORD_RANGE + DUP + DNA_REF,
         COORD_RANGE + DEL,
         COORD_RANGE + DUP,
+
+        # Inversion
+        COORD_RANGE + INV,
 
         # Indels
         "(?P<delins>" + COORD_START + 'del' + DNA_REF + 'ins' + DNA_ALT + ")",
@@ -902,9 +909,38 @@ def get_vcf_allele(hgvs, genome, transcript=None):
 
 
 def matches_ref_allele(hgvs, genome, transcript=None):
-    """Return True if reference allele matches genomic sequence."""
-    ref, alt = hgvs.get_ref_alt(
-        transcript.tx_position.is_forward_strand if transcript else True)
+    """Return True if reference allele matches genomic sequence.
+
+    For duplication variants the check verifies that the sequence at the
+    duplicated region in the genome matches the stated ``ref_allele``.  When
+    no explicit sequence is stored (``ref_allele == ''``) the check is
+    skipped and ``True`` is returned.
+    """
+    is_fwd = transcript.tx_position.is_forward_strand if transcript else True
+
+    if hgvs.mutation_type == "dup":
+        # For dup, get_coords now returns an empty interval (insertion point).
+        # We need the actual duplicated region to verify the sequence.
+        if not hgvs.ref_allele:
+            # No explicit sequence to check.
+            return True
+        if hgvs.kind == 'g':
+            dup_start = hgvs.start
+            dup_end = hgvs.end
+            chrom = hgvs.chrom
+        elif hgvs.kind == 'c' and transcript:
+            chrom = transcript.tx_position.chrom
+            dup_start = cdna_to_genomic_coord(transcript, hgvs.cdna_start)
+            dup_end = cdna_to_genomic_coord(transcript, hgvs.cdna_end)
+            if not transcript.tx_position.is_forward_strand:
+                dup_start, dup_end = dup_end, dup_start
+        else:
+            return True
+        genome_ref = get_genomic_sequence(genome, chrom, dup_start, dup_end)
+        stated_ref = hgvs.ref_allele if is_fwd else revcomp(hgvs.ref_allele)
+        return genome_ref == stated_ref
+
+    ref, alt = hgvs.get_ref_alt(is_fwd)
     chrom, start, end = hgvs.get_coords(transcript)
     genome_ref = get_genomic_sequence(genome, chrom, start, end)
     return genome_ref == ref
@@ -1094,8 +1130,12 @@ class HGVSName(object):
                     self.alt_allele = "N" * int(self.alt_allele)
 
                 # Convert duplication alleles.
+                # For dup, alt_allele stores the inserted (duplicated) sequence,
+                # which is identical to ref_allele.  The previous convention of
+                # storing ref_allele * 2 is no longer used here; get_ref_alt()
+                # returns ("", ref_allele) for dup variants.
                 if self.mutation_type == "dup":
-                    self.alt_allele = self.ref_allele * 2
+                    self.alt_allele = self.ref_allele
 
                 # Convert no match alleles.
                 if self.mutation_type == "=":
@@ -1190,8 +1230,10 @@ class HGVSName(object):
                     self.alt_allele = "N" * int(self.alt_allele)
 
                 # Convert duplication alleles.
+                # alt_allele stores the inserted (duplicated) sequence,
+                # identical to ref_allele.
                 if self.mutation_type == "dup":
-                    self.alt_allele = self.ref_allele * 2
+                    self.alt_allele = self.ref_allele
 
                 # Convert no match alleles.
                 if self.mutation_type == "=":
@@ -1462,7 +1504,22 @@ class HGVSName(object):
         return self.format_coords() + self.format_dna_allele()
 
     def get_coords(self, transcript=None):
-        """Return genomic coordinates of reference allele."""
+        """Return genomic coordinates of reference allele.
+
+        For insertions (``ins``) and duplications (``dup``) the coordinates
+        describe an *empty* interval representing the insertion point.  The
+        empty interval is encoded as ``(start, start - 1)`` so that
+        :meth:`get_vcf_coords` can left-pad by subtracting 1 from *start*.
+
+        For cDNA duplications the convention is consistent with historical
+        behaviour: the empty interval is placed at the start of the duplicated
+        region, so that after VCF left-padding and normalisation the result
+        matches the canonical left-normalised VCF form.
+
+        For genomic duplications the insertion point is placed *after* the
+        last base of the duplicated region (HGVS 3′ convention), which allows
+        the correct single-base VCF anchor to be computed.
+        """
         if self.kind == 'c':
             chrom = transcript.tx_position.chrom
             start = cdna_to_genomic_coord(transcript, self.cdna_start)
@@ -1487,12 +1544,23 @@ class HGVSName(object):
                     end = start - 1
 
             elif self.mutation_type == "dup":
+                # Empty interval at the start of the duplicated region.
+                # After get_vcf_coords subtracts 1, the anchor base lands at
+                # genomic(cdna_start) - 1, which together with VCF
+                # normalisation gives the canonical left-normalised result.
                 end = start - 1
 
         elif self.kind == 'g':
             chrom = self.chrom
             start = self.start
             end = self.end
+
+            if self.mutation_type == "dup":
+                # For genomic dup, the insertion is AFTER the end of the dup
+                # region (HGVS 3′ convention).  Use an empty interval so that
+                # get_vcf_coords gives ref = seq(end, end) = 1 base.
+                start = end + 1
+                # end remains unchanged (last base of duplicated region).
 
         else:
             raise HGVSFormattingError(
@@ -1501,7 +1569,11 @@ class HGVSName(object):
         return chrom, start, end
 
     def get_vcf_coords(self, transcript=None):
-        """Return genomic coordinates of reference allele in VCF-style."""
+        """Return genomic coordinates of reference allele in VCF-style.
+
+        Insertions, deletions and duplications require one base of left-padding
+        (the VCF anchor base).  Inversions use their full coordinate range.
+        """
         chrom, start, end = self.get_coords(transcript)
 
         # Inserts and deletes require left-padding by 1 base
@@ -1510,22 +1582,32 @@ class HGVSName(object):
         elif self.mutation_type in ("del", "ins", "dup", "delins"):
             # Indels have left-padding.
             start -= 1
+        elif self.mutation_type == "inv":
+            # Inversions span their full range; no padding needed.
+            pass
         else:
             raise HGVSFormattingError(
                 "Unknown mutation_type %r" % self.mutation_type)
         return chrom, start, end
 
     def get_ref_alt(self, is_forward_strand=True):
-        """Return reference and alternate alleles."""
+        """Return reference and alternate alleles.
+
+        For duplication (``dup``) variants, returns an empty reference string
+        and the duplicated sequence as the alternate allele, representing the
+        event as a pure insertion.  This is consistent regardless of whether
+        the sequence is stored explicitly or not.
+        """
         if self.kind == 'p':
             raise NotImplementedError(
                 'get_ref_alt is not implemented for protein HGVS names')
         alleles = [self.ref_allele, self.alt_allele]
 
-        # Represent duplications are inserts.
+        # Represent duplications as inserts: ref is empty, alt is the
+        # duplicated sequence (stored in ref_allele).
         if self.mutation_type == "dup":
             alleles[0] = ""
-            alleles[1] = alleles[1][:len(alleles[1]) // 2]
+            alleles[1] = self.ref_allele
 
         if is_forward_strand:
             return alleles
@@ -1543,8 +1625,11 @@ def hgvs_justify_dup(chrom, offset, ref, alt, genome):
     alt: Alternate allele (no padding).
     genome: pygr compatible genome object.
 
-    Returns duplicated region [start, end] if allele is an insert that
-    could be represented as a duplication. Otherwise, returns None.
+    For a duplication, ``ref`` and ``alt`` are both set to the duplicated
+    sequence (``indel_seq``).  The mutation_type is set to ``'dup'``.
+    For a plain insertion, mutation_type is ``'ins'``.
+
+    Returns ``(chrom, offset, ref, alt, mutation_type)``.
     """
 
     if len(ref) == len(alt) == 0:
@@ -1578,11 +1663,12 @@ def hgvs_justify_dup(chrom, offset, ref, alt, genome):
         offset = offset - indel_length
         mutation_type = 'dup'
         ref = indel_seq
-        alt = indel_seq * 2
+        # alt equals ref for dup: both represent the duplicated sequence.
+        alt = indel_seq
     elif next_seq == indel_seq:
         mutation_type = 'dup'
         ref = indel_seq
-        alt = indel_seq * 2
+        alt = indel_seq
     else:
         mutation_type = 'ins'
 

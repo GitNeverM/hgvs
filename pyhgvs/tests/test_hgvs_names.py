@@ -391,7 +391,7 @@ _parse_names = [
          'cdna_start': CDNACoord(101),
          'cdna_end': CDNACoord(101),
          'ref_allele': 'A',
-         'alt_allele': 'AA',
+         'alt_allele': 'A',
          'mutation_type': 'dup',
      }),
 
@@ -433,7 +433,7 @@ _parse_names = [
          'cdna_start': CDNACoord(1000),
          'cdna_end': CDNACoord(1002),
          'ref_allele': 'ATG',
-         'alt_allele': 'ATGATG',
+         'alt_allele': 'ATG',
          'mutation_type': 'dup',
      }),
     ('BRCA1:c.1000+5_1000+6insATG', True,
@@ -575,7 +575,7 @@ _parse_names = [
          'start': 101,
          'end': 101,
          'ref_allele': 'A',
-         'alt_allele': 'AA',
+         'alt_allele': 'A',
          'mutation_type': 'dup',
      }),
 
@@ -617,7 +617,7 @@ _parse_names = [
          'start': 1000,
          'end': 1002,
          'ref_allele': 'ATG',
-         'alt_allele': 'ATGATG',
+         'alt_allele': 'ATG',
          'mutation_type': 'dup',
      }),
 
