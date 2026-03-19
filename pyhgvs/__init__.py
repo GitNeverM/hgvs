@@ -242,6 +242,15 @@ def normalize_aa_allele(allele, use_3letter=True):
                          for p in parts]
             return ''.join(converted)
 
+    # All characters are valid single-letter amino acid codes (multi-1-letter
+    # sequence, e.g. 'ST*' from a delins alt allele).
+    # This check comes after the 3-letter checks so 'Ala' is not mistaken for
+    # a three-character 1-letter sequence ('A', 'l', 'a' — 'l' is invalid).
+    if len(allele) > 1 and all(c in AA1_TO_AA3 for c in allele):
+        if use_3letter:
+            return ''.join(AA1_TO_AA3[c] for c in allele)
+        return allele
+
     # Unknown — return as-is
     return allele
 
@@ -386,17 +395,21 @@ class HGVSRegex(object):
                            for regex in CDNA_ALLELE]
 
     # Peptide syntax
-    # 3-letter amino acid code (any capitalised 3-char sequence, e.g. Glu, Ser)
+    # 3-letter amino acid code (one or more, e.g. Glu, Ser, GluSer, Ter)
     PEP3 = r"(?:[A-Z][a-z]{2})+"
     # 1-letter amino acid code or stop codon (*)
     PEP1 = r"[ACDEFGHIKLMNPQRSTVWYX*]"
-    # Combined: tries 3-letter first, then 1-letter
+    # Single amino acid: one 3-letter code OR one 1-letter code
     PEP = "(?:" + PEP3 + "|" + PEP1 + ")"
+    # Sequence of one or more amino acids (used for ins/delins alt alleles)
+    PEP_SEQ = "(?:" + PEP3 + "|" + PEP1 + ")+"
 
-    # Keep the old PEP name as an alias so subclasses/external code still works
     PEP_REF = "(?P<ref>" + PEP + ")"
     PEP_REF2 = "(?P<ref2>" + PEP + ")"
+    # PEP_ALT for substitution: single amino acid
     PEP_ALT = "(?P<alt>" + PEP + ")"
+    # PEP_ALT_SEQ for insertion/delins: one or more amino acids
+    PEP_ALT_SEQ = "(?P<alt>" + PEP_SEQ + ")"
 
     # PEP_EXTRA matches the optional suffix that follows a protein allele:
     #   =     synonymous (no change)
@@ -408,17 +421,53 @@ class HGVSRegex(object):
     PEP_EXTRA = r"(?P<extra>(?:\?fs|=|\?|fs)?)"
 
     # Peptide allele syntax
+    # Note: patterns with explicit keywords (del/dup/ins/delins) are listed
+    # before the generic substitution pattern so more-specific forms match first.
+    # Predicted (parenthesized) forms are handled by parse_protein() which
+    # strips the surrounding '(' ')' before matching.
     PEP_ALLELE = [
-        # No peptide change
-        # Example: Glu1161=
+        # ---- Deletion (single residue) ----
+        # Example: Trp24del, W24del
+        PEP_REF + COORD_START + r"(?P<mutation_type>del)",
+
+        # ---- Deletion (range) ----
+        # Example: Trp24_Ala26del, W24_A26del
+        PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END +
+        r"(?P<mutation_type>del)",
+
+        # ---- Duplication (single residue) ----
+        # Example: Val7dup, V7dup
+        PEP_REF + COORD_START + r"(?P<mutation_type>dup)",
+
+        # ---- Duplication (range) ----
+        # Example: Lys23_Val25dup, K23_V25dup
+        PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END +
+        r"(?P<mutation_type>dup)",
+
+        # ---- Insertion ----
+        # Example: His4_Gln5insAla, H4_Q5insAlaGlu, Lys2_Gly3insGlnSerLys
+        PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END +
+        r"(?P<mutation_type>ins)" + PEP_ALT_SEQ,
+
+        # ---- Deletion-Insertion (single residue) ----
+        # Example: Asn47delinsSerSerTer, N47delinsST*
+        PEP_REF + COORD_START + r"(?P<mutation_type>delins)" + PEP_ALT_SEQ,
+
+        # ---- Deletion-Insertion (range) ----
+        # Example: Glu125_Ala132delinsGlyLeuHisArgPheIleValLeu
+        PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END +
+        r"(?P<mutation_type>delins)" + PEP_ALT_SEQ,
+
+        # ---- No peptide change ----
+        # Example: Glu1161=, E1161=
         PEP_REF + COORD_START + PEP_EXTRA,
 
-        # Peptide change
-        # Example: Glu1161Ser  /  R132H
+        # ---- Substitution (missense / nonsense) ----
+        # Example: Glu1161Ser, R132H, Arg132Ter, Arg132*
         PEP_REF + COORD_START + PEP_ALT + PEP_EXTRA,
 
-        # Peptide indel
-        # Example: Glu1161_Ser1164?fs
+        # ---- Legacy range indel (backward compatibility) ----
+        # Example: Glu1161_Ser1164?fs  (old-style frameshift notation)
         "(?P<delins>" + PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END +
         PEP_EXTRA + ")",
         "(?P<delins>" + PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END +
@@ -987,6 +1036,11 @@ class HGVSName(object):
 
         # Protein-specific fields
         self.pep_extra = pep_extra
+        # True when the consequence is predicted (written inside parentheses,
+        # e.g. p.(Trp24Cys)).  Always ``False`` for freshly constructed objects
+        # that have not been parsed from a string; set to ``True`` by
+        # :meth:`parse_protein` when the allele detail is wrapped in ``()``.
+        self.predicted = False
 
         if name:
             self.parse(name)
@@ -1153,20 +1207,43 @@ class HGVSName(object):
         are stored exactly as they appear in the input string; use
         :meth:`normalize` to obtain a canonical three-letter representation.
 
-        Some examples include:
-          No change:    Glu1161=   or  E1161=
-          Change:       Glu1161Ser or  R132H
-          Frameshift:   Glu1161_Ser1164?fs
+        Supports (per HGVS stable recommendations):
+          No change:           Glu1161=   or  E1161=
+          Substitution:        Glu1161Ser or  R132H  or  Arg132Ter  or  Arg132*
+          Deletion (single):   Trp24del   or  W24del
+          Deletion (range):    Trp24_Ala26del
+          Duplication (single):Val7dup    or  V7dup
+          Duplication (range): Lys23_Val25dup
+          Insertion:           His4_Gln5insAla  or  Lys2_Gly3insGlnSerLys
+          Delins (single):     Asn47delinsSerSerTer  or  N47delinsST*
+          Delins (range):      Glu125_Ala132delinsGlyLeuHis
+          Predicted (any):     (Trp24Cys)  (Trp24del)  (His4_Gln5insAla) …
+          Legacy frameshift:   Glu1161_Ser1164?fs
         """
+        # Handle predicted (parenthesized) forms: p.(Trp24Cys)
+        # Strip the surrounding parentheses and record the predicted flag.
+        inner = details
+        if inner.startswith('(') and inner.endswith(')'):
+            inner = inner[1:-1]
+            self.predicted = True
+        else:
+            self.predicted = False
+
         for regex in HGVSRegex.PEP_ALLELE_REGEXES:
-            match = re.match(regex, details)
+            match = re.match(regex, inner)
             if match:
                 groups = match.groupdict()
 
                 # Parse mutation type.
-                if groups.get('delins'):
+                explicit_type = groups.get('mutation_type')
+                if explicit_type:
+                    # Explicit keyword: del, dup, ins, delins
+                    self.mutation_type = explicit_type
+                elif groups.get('delins'):
+                    # Legacy range indel marker
                     self.mutation_type = 'delins'
                 else:
+                    # Substitution or no-change (handled by format_protein)
                     self.mutation_type = '>'
 
                 # Parse coordinates.
@@ -1376,37 +1453,96 @@ class HGVSName(object):
                 If ``False``, single-letter codes are used instead
                 (e.g. ``E``, ``S``).
 
-        Some examples include:
-          No change: Glu1161=  /  E1161=
-          Change:    Glu1161Ser  /  R132H
-          Frameshift: Glu1161_Ser1164?fs
+        Supports (per HGVS stable recommendations):
+          No change:           Glu1161=  /  E1161=
+          Substitution:        Glu1161Ser  /  R132H  /  Arg132Ter
+          Deletion (single):   Trp24del  /  W24del
+          Deletion (range):    Trp24_Ala26del
+          Duplication (single):Val7dup  /  V7dup
+          Duplication (range): Lys23_Val25dup
+          Insertion:           His4_Gln5insAla  /  Lys2_Gly3insGlnSerLys
+          Delins (single):     Asn47delinsSerSerTer
+          Delins (range):      Glu125_Ala132delinsGlyLeuHis
+          Predicted (any):     (Trp24Cys)  (Trp24del) …
+          Legacy range indel:  Glu1161_Ser1164?fs
         """
 
         def _fmt(allele):
             """Normalise *allele* according to the requested notation."""
             return normalize_aa_allele(allele, use_3letter=use_3letter)
 
-        if (self.start == self.end and
-                self.ref_allele == self.ref2_allele == self.alt_allele):
-            # Match.
-            # Example: Glu1161=
-            pep_extra = self.pep_extra if self.pep_extra else '='
-            return _fmt(self.ref_allele) + str(self.start) + pep_extra
+        # Wrap with parentheses for predicted consequences.
+        pred_open = '(' if getattr(self, 'predicted', False) else ''
+        pred_close = ')' if getattr(self, 'predicted', False) else ''
 
+        # --- Deletion ---
+        if self.mutation_type == 'del':
+            if self.start == self.end:
+                # Single residue: Trp24del
+                return (pred_open + _fmt(self.ref_allele) +
+                        str(self.start) + 'del' + pred_close)
+            else:
+                # Range: Trp24_Ala26del
+                return (pred_open + _fmt(self.ref_allele) + str(self.start) +
+                        '_' + _fmt(self.ref2_allele) + str(self.end) +
+                        'del' + pred_close)
+
+        # --- Duplication ---
+        elif self.mutation_type == 'dup':
+            if self.start == self.end:
+                # Single residue: Val7dup
+                return (pred_open + _fmt(self.ref_allele) +
+                        str(self.start) + 'dup' + pred_close)
+            else:
+                # Range: Lys23_Val25dup
+                return (pred_open + _fmt(self.ref_allele) + str(self.start) +
+                        '_' + _fmt(self.ref2_allele) + str(self.end) +
+                        'dup' + pred_close)
+
+        # --- Insertion ---
+        elif self.mutation_type == 'ins':
+            # Always a range: His4_Gln5insAla
+            return (pred_open + _fmt(self.ref_allele) + str(self.start) + '_' +
+                    _fmt(self.ref2_allele) + str(self.end) + 'ins' +
+                    _fmt(self.alt_allele) + pred_close)
+
+        # --- Deletion-Insertion ---
+        elif self.mutation_type == 'delins':
+            if self.start != self.end:
+                if self.alt_allele:
+                    # Range delins: Glu125_Ala132delinsGlyLeuHis
+                    return (pred_open + _fmt(self.ref_allele) + str(self.start) +
+                            '_' + _fmt(self.ref2_allele) + str(self.end) +
+                            'delins' + _fmt(self.alt_allele) + pred_close)
+                else:
+                    # Legacy range without explicit alt (e.g. ?fs frameshift):
+                    # Glu1161_Ser1164?fs
+                    return (pred_open + _fmt(self.ref_allele) + str(self.start) +
+                            '_' + _fmt(self.ref2_allele) + str(self.end) +
+                            (self.pep_extra or '') + pred_close)
+            else:
+                # Single residue: Asn47delinsSerSerTer
+                return (pred_open + _fmt(self.ref_allele) + str(self.start) +
+                        'delins' + _fmt(self.alt_allele) + pred_close)
+
+        # --- No change (synonymous) ---
+        elif (self.start == self.end and
+                self.ref_allele == self.ref2_allele == self.alt_allele):
+            pep_extra = self.pep_extra if self.pep_extra else '='
+            return pred_open + _fmt(self.ref_allele) + str(self.start) + pep_extra + pred_close
+
+        # --- Substitution ---
         elif (self.start == self.end and
                 self.ref_allele == self.ref2_allele and
                 self.ref_allele != self.alt_allele):
-            # Change.
-            # Example: Glu1161Ser
-            return (_fmt(self.ref_allele) + str(self.start) +
-                    _fmt(self.alt_allele) + (self.pep_extra or ''))
+            return (pred_open + _fmt(self.ref_allele) + str(self.start) +
+                    _fmt(self.alt_allele) + (self.pep_extra or '') + pred_close)
 
+        # --- Legacy range change (e.g. Glu1161_Ser1164?fs) ---
         elif self.start != self.end:
-            # Range change.
-            # Example: Glu1161_Ser1164?fs
-            return (_fmt(self.ref_allele) + str(self.start) + '_' +
+            return (pred_open + _fmt(self.ref_allele) + str(self.start) + '_' +
                     _fmt(self.ref2_allele) + str(self.end) +
-                    (self.pep_extra or ''))
+                    (self.pep_extra or '') + pred_close)
 
         else:
             raise HGVSFormattingError('cannot format protein name with these fields')
