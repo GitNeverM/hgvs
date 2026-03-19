@@ -322,9 +322,10 @@ class TestProteinVariantParsing:
         # Frameshift range
         ('NM_004380.2:p.Glu1161_Ser1164?fs',
          {'mutation_type': 'delins', 'start': 1161, 'end': 1164, 'pep_extra': '?fs'}),
-        # Frameshift single
+        # Frameshift single (now correctly parsed as mutation_type='fs')
         ('NM_004380.2:p.Glu1161fs',
-         {'mutation_type': '>', 'ref_allele': 'Glu', 'start': 1161, 'pep_extra': 'fs'}),
+         {'mutation_type': 'fs', 'ref_allele': 'Glu', 'start': 1161,
+          'fs_new_aa': '', 'fs_stop': None}),
     ])
     def test_protein_variant(self, hgvs_str, expected):
         h = _parse(hgvs_str)

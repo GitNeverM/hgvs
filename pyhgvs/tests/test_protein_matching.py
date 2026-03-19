@@ -1030,3 +1030,336 @@ class TestProteinRegressions:
 
     def test_hgvs_equal_1letter_3letter(self):
         assert hgvs_names_equal('p.R132H', 'p.Arg132His')
+
+
+# ---------------------------------------------------------------------------
+# Frameshift (HGVS stable protein/frameshift)
+# ---------------------------------------------------------------------------
+
+class TestProteinFrameshift:
+    """Tests for HGVS protein frameshift notation per the stable standard.
+
+    Supported forms:
+      Short:          p.Arg97fs
+      Long (Ter):     p.Arg97ProfsTer23
+      Long (*):       p.Arg97Profs*23   (equivalent to Ter form; both store fs_stop='23')
+      Unknown stop:   p.Ile327Argfs*?
+      Predicted:      p.(Arg123LysfsTer34)  /  p.(Arg123fs)
+      Prefix:         NP_0123456.1:p.Arg97fs
+      1-letter:       p.R97fs  /  p.R97PfsTer23
+
+    Rejected:
+      p.Tyr4TerfsTer1  (new AA is stop → nonsense, not frameshift)
+    """
+
+    # --- Parsing: 3-letter notation ---
+
+    def test_short_frameshift_3letter(self):
+        """p.Arg97fs — short form, no new AA, no stop."""
+        n = HGVSName('p.Arg97fs')
+        assert n.kind == 'p'
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Arg'
+        assert n.start == 97
+        assert n.end == 97
+        assert n.fs_new_aa == ''
+        assert n.fs_stop is None
+        assert n.predicted is False
+
+    def test_long_frameshift_ter_3letter(self):
+        """p.Arg97ProfsTer23 — long form with Ter stop."""
+        n = HGVSName('p.Arg97ProfsTer23')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Arg'
+        assert n.start == 97
+        assert n.fs_new_aa == 'Pro'
+        assert n.fs_stop == '23'
+        assert n.predicted is False
+
+    def test_long_frameshift_star_3letter(self):
+        """p.Arg97Profs*23 — long form with * stop (same as Ter)."""
+        n = HGVSName('p.Arg97Profs*23')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Arg'
+        assert n.fs_new_aa == 'Pro'
+        assert n.fs_stop == '23'
+
+    def test_unknown_stop_3letter(self):
+        """p.Ile327Argfs*? — stop position unknown."""
+        n = HGVSName('p.Ile327Argfs*?')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Ile'
+        assert n.start == 327
+        assert n.fs_new_aa == 'Arg'
+        assert n.fs_stop == '?'
+
+    def test_short_other_residues_3letter(self):
+        """p.Glu5fs — short form with different amino acid."""
+        n = HGVSName('p.Glu5fs')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Glu'
+        assert n.start == 5
+        assert n.fs_new_aa == ''
+        assert n.fs_stop is None
+
+    def test_long_with_ter_stop_official_example(self):
+        """p.Glu5ValfsTer5 — official example from HGVS docs."""
+        n = HGVSName('p.Glu5ValfsTer5')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Glu'
+        assert n.fs_new_aa == 'Val'
+        assert n.fs_stop == '5'
+
+    def test_long_official_gln151(self):
+        """p.Gln151Thrfs*9 — official example."""
+        n = HGVSName('p.Gln151Thrfs*9')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Gln'
+        assert n.start == 151
+        assert n.fs_new_aa == 'Thr'
+        assert n.fs_stop == '9'
+
+    # --- Parsing: predicted (parenthesized) forms ---
+
+    def test_predicted_long_frameshift(self):
+        """p.(Arg123LysfsTer34) — predicted long form."""
+        n = HGVSName('p.(Arg123LysfsTer34)')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Arg'
+        assert n.start == 123
+        assert n.fs_new_aa == 'Lys'
+        assert n.fs_stop == '34'
+        assert n.predicted is True
+
+    def test_predicted_short_frameshift(self):
+        """p.(Arg123fs) — predicted short form."""
+        n = HGVSName('p.(Arg123fs)')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Arg'
+        assert n.start == 123
+        assert n.fs_new_aa == ''
+        assert n.fs_stop is None
+        assert n.predicted is True
+
+    def test_predicted_star_stop_frameshift(self):
+        """p.(Glu5Valfs*5) — predicted with * stop."""
+        n = HGVSName('p.(Glu5Valfs*5)')
+        assert n.mutation_type == 'fs'
+        assert n.predicted is True
+        assert n.fs_new_aa == 'Val'
+        assert n.fs_stop == '5'
+
+    # --- Parsing: 1-letter notation ---
+
+    def test_short_frameshift_1letter(self):
+        """p.R97fs — 1-letter short form."""
+        n = HGVSName('p.R97fs')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'R'
+        assert n.start == 97
+        assert n.fs_new_aa == ''
+        assert n.fs_stop is None
+
+    def test_long_frameshift_ter_1letter(self):
+        """p.R97PfsTer23 — 1-letter long form with Ter stop."""
+        n = HGVSName('p.R97PfsTer23')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'R'
+        assert n.fs_new_aa == 'P'
+        assert n.fs_stop == '23'
+
+    def test_long_frameshift_star_1letter(self):
+        """p.R97Pfs*23 — 1-letter long form with * stop."""
+        n = HGVSName('p.R97Pfs*23')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'R'
+        assert n.fs_new_aa == 'P'
+        assert n.fs_stop == '23'
+
+    def test_unknown_stop_1letter(self):
+        """p.I327Rfs*? — 1-letter unknown stop."""
+        n = HGVSName('p.I327Rfs*?')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'I'
+        assert n.fs_new_aa == 'R'
+        assert n.fs_stop == '?'
+
+    def test_predicted_short_1letter(self):
+        """p.(R97fs) — 1-letter predicted short."""
+        n = HGVSName('p.(R97fs)')
+        assert n.mutation_type == 'fs'
+        assert n.predicted is True
+        assert n.ref_allele == 'R'
+
+    # --- Prefix support ---
+
+    def test_np_prefix_short(self):
+        """NP_0123456.1:p.Arg97fs — protein accession prefix."""
+        n = HGVSName('NP_0123456.1:p.Arg97fs')
+        assert n.mutation_type == 'fs'
+        # NP_ protein accessions are stored in gene/prefix (not transcript)
+        assert n.prefix == 'NP_0123456.1'
+        assert n.ref_allele == 'Arg'
+        assert n.start == 97
+
+    def test_np_prefix_long(self):
+        """NP_0123456.1:p.Arg97ProfsTer23 — prefix + long form."""
+        n = HGVSName('NP_0123456.1:p.Arg97ProfsTer23')
+        assert n.mutation_type == 'fs'
+        assert n.prefix == 'NP_0123456.1'
+        assert n.fs_new_aa == 'Pro'
+        assert n.fs_stop == '23'
+
+    def test_nm_prefix(self):
+        """NM_004380.2:p.Ile327Argfs*? — mRNA transcript prefix."""
+        n = HGVSName('NM_004380.2:p.Ile327Argfs*?')
+        assert n.mutation_type == 'fs'
+        assert n.transcript == 'NM_004380.2'
+        assert n.fs_new_aa == 'Arg'
+        assert n.fs_stop == '?'
+
+    # --- Formatting: 3-letter output ---
+
+    def test_format_short_3letter(self):
+        """Short form formats as Arg97fs."""
+        n = HGVSName('p.Arg97fs')
+        assert n.format_protein(use_3letter=True) == 'Arg97fs'
+        assert n.format() == 'p.Arg97fs'
+
+    def test_format_long_ter_3letter(self):
+        """Long form with * stop formats with Ter in 3-letter mode."""
+        n = HGVSName('p.Arg97Profs*23')
+        assert n.format_protein(use_3letter=True) == 'Arg97ProfsTer23'
+
+    def test_format_long_ter_input_3letter(self):
+        """Long form with Ter input round-trips."""
+        n = HGVSName('p.Arg97ProfsTer23')
+        assert n.format_protein(use_3letter=True) == 'Arg97ProfsTer23'
+        assert n.format() == 'p.Arg97ProfsTer23'
+
+    def test_format_unknown_stop_3letter(self):
+        """Unknown stop formats as TerN? in 3-letter mode."""
+        n = HGVSName('p.Ile327Argfs*?')
+        assert n.format_protein(use_3letter=True) == 'Ile327ArgfsTer?'
+
+    def test_format_predicted_long_3letter(self):
+        """Predicted long form includes parentheses."""
+        n = HGVSName('p.(Arg123LysfsTer34)')
+        assert n.format_protein(use_3letter=True) == '(Arg123LysfsTer34)'
+        assert n.format() == 'p.(Arg123LysfsTer34)'
+
+    def test_format_predicted_short_3letter(self):
+        """Predicted short form includes parentheses."""
+        n = HGVSName('p.(Arg123fs)')
+        assert n.format_protein(use_3letter=True) == '(Arg123fs)'
+        assert n.format() == 'p.(Arg123fs)'
+
+    # --- Formatting: 1-letter output ---
+
+    def test_format_short_1letter(self):
+        """Short form in 1-letter mode."""
+        n = HGVSName('p.Arg97fs')
+        assert n.format_protein(use_3letter=False) == 'R97fs'
+        assert n.format(use_3letter=False) == 'p.R97fs'
+
+    def test_format_long_1letter(self):
+        """Long form (Ter stop) in 1-letter mode uses *."""
+        n = HGVSName('p.Arg97ProfsTer23')
+        assert n.format_protein(use_3letter=False) == 'R97Pfs*23'
+
+    def test_format_unknown_stop_1letter(self):
+        """Unknown stop in 1-letter mode."""
+        n = HGVSName('p.Ile327Argfs*?')
+        assert n.format_protein(use_3letter=False) == 'I327Rfs*?'
+
+    def test_format_predicted_long_1letter(self):
+        """Predicted long form in 1-letter mode."""
+        n = HGVSName('p.(Arg123LysfsTer34)')
+        assert n.format_protein(use_3letter=False) == '(R123Kfs*34)'
+
+    def test_format_predicted_short_1letter(self):
+        """Predicted short form in 1-letter mode."""
+        n = HGVSName('p.(Arg123fs)')
+        assert n.format_protein(use_3letter=False) == '(R123fs)'
+
+    # --- 1-letter input → 3-letter output (normalize) ---
+
+    def test_1letter_input_3letter_format(self):
+        """1-letter input formats as 3-letter when requested."""
+        n = HGVSName('p.R97fs')
+        assert n.format_protein(use_3letter=True) == 'Arg97fs'
+
+    def test_1letter_long_input_3letter_format(self):
+        """1-letter long input formats as 3-letter."""
+        n = HGVSName('p.R97PfsTer23')
+        assert n.format_protein(use_3letter=True) == 'Arg97ProfsTer23'
+
+    def test_star_stop_input_3letter_format(self):
+        """* stop input formats as Ter in 3-letter mode."""
+        n = HGVSName('p.Arg97Profs*23')
+        assert n.format_protein(use_3letter=True) == 'Arg97ProfsTer23'
+
+    # --- Equivalence ---
+
+    def test_equivalent_short_1letter_vs_3letter(self):
+        """p.R97fs ≡ p.Arg97fs."""
+        assert HGVSName('p.R97fs').equivalent(HGVSName('p.Arg97fs'))
+
+    def test_equivalent_long_1letter_vs_3letter(self):
+        """p.R97PfsTer23 ≡ p.Arg97ProfsTer23."""
+        assert HGVSName('p.R97PfsTer23').equivalent(HGVSName('p.Arg97ProfsTer23'))
+
+    def test_equivalent_star_vs_ter_stop(self):
+        """p.Arg97Profs*23 ≡ p.Arg97ProfsTer23 (both encode fs_stop='23')."""
+        assert HGVSName('p.Arg97Profs*23').equivalent(HGVSName('p.Arg97ProfsTer23'))
+
+    def test_not_equivalent_short_vs_long(self):
+        """Short form ≢ long form (different information)."""
+        assert not HGVSName('p.Arg97fs').equivalent(HGVSName('p.Arg97ProfsTer23'))
+
+    def test_not_equivalent_different_stop(self):
+        """Different stop positions are not equivalent."""
+        assert not HGVSName('p.Arg97ProfsTer23').equivalent(
+            HGVSName('p.Arg97ProfsTer24'))
+
+    def test_not_equivalent_fs_vs_substitution(self):
+        """Frameshift ≢ substitution at same position."""
+        assert not HGVSName('p.Arg97fs').equivalent(HGVSName('p.Arg97Pro'))
+
+    # --- Rejection of invalid frameshift forms ---
+
+    def test_reject_ter_as_new_aa(self):
+        """p.Tyr4TerfsTer1: new AA is Ter → nonsense, should not parse as fs."""
+        with pytest.raises(HGVSParseError):
+            HGVSName('p.Tyr4TerfsTer1')
+
+    def test_reject_star_as_new_aa(self):
+        """p.Tyr4*fsTer1: new AA is * → nonsense, should not parse as fs."""
+        with pytest.raises(HGVSParseError):
+            HGVSName('p.Tyr4*fsTer1')
+
+    # --- normalize() includes fs_new_aa ---
+
+    def test_normalize_fs_new_aa_1letter_to_3letter(self):
+        """normalize() converts fs_new_aa from 1-letter to 3-letter."""
+        n = HGVSName('p.R97Pfs*23')
+        norm = n.normalize()
+        assert norm.ref_allele == 'Arg'
+        assert norm.fs_new_aa == 'Pro'
+        assert norm.fs_stop == '23'
+
+    def test_normalize_fs_3letter_unchanged(self):
+        """normalize() leaves 3-letter fs_new_aa unchanged."""
+        n = HGVSName('p.Arg97ProfsTer23')
+        norm = n.normalize()
+        assert norm.fs_new_aa == 'Pro'
+
+    # --- Legacy range frameshift is not broken ---
+
+    def test_legacy_range_frameshift_still_works(self):
+        """p.Glu1000_Ser1003?fs still parses as before (mutation_type='delins')."""
+        n = HGVSName('p.Glu1000_Ser1003?fs')
+        assert n.mutation_type == 'delins'
+        assert n.start == 1000
+        assert n.end == 1003
+        assert n.pep_extra == '?fs'
