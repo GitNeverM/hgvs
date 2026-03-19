@@ -435,3 +435,565 @@ class TestExceptionHierarchy:
         n = HGVSName('p.Arg132His')
         r = repr(n)
         assert 'HGVSName' in r
+
+
+# ---------------------------------------------------------------------------
+# HGVS stable protein categories — Frameshift
+# (https://hgvs-nomenclature.org/stable/recommendations/protein/frameshift/)
+# ---------------------------------------------------------------------------
+
+class TestFrameshiftParsing:
+    """Tests for HGVS protein frameshift expressions."""
+
+    def test_simple_frameshift_3letter(self):
+        """p.Arg97fs — simplest frameshift, no new AA or ter position."""
+        n = HGVSName('p.Arg97fs')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Arg'
+        assert n.start == 97
+        assert n.end == 97
+        assert n.alt_allele == ''
+        assert n.pep_extra == 'fs'
+
+    def test_simple_frameshift_1letter(self):
+        """p.R97fs — 1-letter code."""
+        n = HGVSName('p.R97fs')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'R'
+        assert n.start == 97
+        assert n.pep_extra == 'fs'
+
+    def test_frameshift_with_new_aa_and_ter_3letter(self):
+        """p.Arg97ProfsTer23 — new AA + Ter + position."""
+        n = HGVSName('p.Arg97ProfsTer23')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Arg'
+        assert n.start == 97
+        assert n.alt_allele == 'Pro'
+        assert n.pep_extra == 'fsTer23'
+
+    def test_frameshift_with_star_notation(self):
+        """p.Arg97Profs*23 — uses * instead of Ter."""
+        n = HGVSName('p.Arg97Profs*23')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Arg'
+        assert n.alt_allele == 'Pro'
+        # pep_extra normalises * → Ter during parse
+        assert n.pep_extra == 'fsTer23'
+
+    def test_frameshift_with_unknown_ter_position(self):
+        """p.Ile327Argfs*? — uncertain termination position."""
+        n = HGVSName('p.Ile327Argfs*?')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Ile'
+        assert n.start == 327
+        assert n.alt_allele == 'Arg'
+        assert n.pep_extra == 'fsTer?'
+
+    def test_frameshift_predicted_form_simple(self):
+        """p.(Arg123fs) — predicted consequence, outer parens stripped."""
+        n = HGVSName('p.(Arg123fs)')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Arg'
+        assert n.start == 123
+        assert n.pep_extra == 'fs'
+
+    def test_frameshift_predicted_form_with_ter(self):
+        """p.(Arg123LysfsTer34) — predicted frameshift with new AA."""
+        n = HGVSName('p.(Arg123LysfsTer34)')
+        assert n.mutation_type == 'fs'
+        assert n.ref_allele == 'Arg'
+        assert n.start == 123
+        assert n.alt_allele == 'Lys'
+        assert n.pep_extra == 'fsTer34'
+
+    def test_frameshift_format_simple(self):
+        n = HGVSName('p.Arg97fs')
+        assert n.format() == 'p.Arg97fs'
+
+    def test_frameshift_format_with_ter_3letter(self):
+        n = HGVSName('p.Arg97ProfsTer23')
+        assert n.format(use_3letter=True) == 'p.Arg97ProfsTer23'
+
+    def test_frameshift_format_with_ter_1letter(self):
+        """Formatting with use_3letter=False converts Ter → *."""
+        n = HGVSName('p.Arg97ProfsTer23')
+        assert n.format(use_3letter=False) == 'p.R97Pfs*23'
+
+    def test_frameshift_with_star_formats_as_ter(self):
+        """Input p.Arg97Profs*23 normalises to Ter in 3-letter output."""
+        n = HGVSName('p.Arg97Profs*23')
+        assert n.format(use_3letter=True) == 'p.Arg97ProfsTer23'
+
+    def test_frameshift_equivalence_star_vs_ter(self):
+        """p.Arg97Profs*23 and p.Arg97ProfsTer23 are semantically equal."""
+        assert hgvs_names_equal('p.Arg97Profs*23', 'p.Arg97ProfsTer23')
+
+    def test_frameshift_equivalence_1letter_vs_3letter(self):
+        """p.R97Pfs*23 and p.Arg97ProfsTer23 are semantically equal."""
+        assert hgvs_names_equal('p.R97Pfs*23', 'p.Arg97ProfsTer23')
+
+    def test_frameshift_legacy_range_unchanged(self):
+        """Legacy range frameshift p.Glu1161_Ser1164?fs still works."""
+        n = HGVSName('p.Glu1000_Ser1003?fs')
+        assert n.mutation_type == 'delins'
+        assert n.start == 1000
+        assert n.end == 1003
+        assert n.pep_extra == '?fs'
+        assert n.format() == 'p.Glu1000_Ser1003?fs'
+
+
+# ---------------------------------------------------------------------------
+# HGVS stable protein categories — Deletion
+# ---------------------------------------------------------------------------
+
+class TestProteinDeletion:
+    """Tests for HGVS protein deletion expressions."""
+
+    def test_single_deletion_3letter(self):
+        """p.Lys23del — single-residue deletion."""
+        n = HGVSName('p.Lys23del')
+        assert n.mutation_type == 'del'
+        assert n.ref_allele == 'Lys'
+        assert n.start == 23
+        assert n.end == 23
+        assert n.alt_allele == ''
+
+    def test_single_deletion_1letter(self):
+        """p.K23del — 1-letter notation."""
+        n = HGVSName('p.K23del')
+        assert n.mutation_type == 'del'
+        assert n.ref_allele == 'K'
+        assert n.start == 23
+
+    def test_range_deletion_3letter(self):
+        """p.Lys23_Val25del — range deletion."""
+        n = HGVSName('p.Lys23_Val25del')
+        assert n.mutation_type == 'del'
+        assert n.ref_allele == 'Lys'
+        assert n.ref2_allele == 'Val'
+        assert n.start == 23
+        assert n.end == 25
+
+    def test_range_deletion_1letter(self):
+        """p.K23_V25del — range deletion 1-letter."""
+        n = HGVSName('p.K23_V25del')
+        assert n.mutation_type == 'del'
+        assert n.ref_allele == 'K'
+        assert n.ref2_allele == 'V'
+        assert n.start == 23
+        assert n.end == 25
+
+    def test_deletion_format_single(self):
+        n = HGVSName('p.Lys23del')
+        assert n.format() == 'p.Lys23del'
+
+    def test_deletion_format_range(self):
+        n = HGVSName('p.Lys23_Val25del')
+        assert n.format() == 'p.Lys23_Val25del'
+
+    def test_deletion_format_1letter_to_3letter(self):
+        n = HGVSName('p.K23del')
+        assert n.format(use_3letter=True) == 'p.Lys23del'
+
+    def test_deletion_predicted_form(self):
+        """p.(Lys23del) — predicted form parens are stripped."""
+        n = HGVSName('p.(Lys23del)')
+        assert n.mutation_type == 'del'
+        assert n.ref_allele == 'Lys'
+        assert n.start == 23
+
+
+# ---------------------------------------------------------------------------
+# HGVS stable protein categories — Duplication
+# ---------------------------------------------------------------------------
+
+class TestProteinDuplication:
+    """Tests for HGVS protein duplication expressions."""
+
+    def test_single_duplication_3letter(self):
+        """p.Lys23dup — single-residue duplication."""
+        n = HGVSName('p.Lys23dup')
+        assert n.mutation_type == 'dup'
+        assert n.ref_allele == 'Lys'
+        assert n.start == 23
+        assert n.end == 23
+        # alt_allele == ref_allele for dup
+        assert n.alt_allele == 'Lys'
+
+    def test_single_duplication_1letter(self):
+        n = HGVSName('p.K23dup')
+        assert n.mutation_type == 'dup'
+        assert n.ref_allele == 'K'
+
+    def test_range_duplication_3letter(self):
+        """p.Lys23_Val25dup — range duplication."""
+        n = HGVSName('p.Lys23_Val25dup')
+        assert n.mutation_type == 'dup'
+        assert n.start == 23
+        assert n.end == 25
+        assert n.ref_allele == 'Lys'
+        assert n.ref2_allele == 'Val'
+
+    def test_duplication_format_single(self):
+        n = HGVSName('p.Lys23dup')
+        assert n.format() == 'p.Lys23dup'
+
+    def test_duplication_format_range(self):
+        n = HGVSName('p.Lys23_Val25dup')
+        assert n.format() == 'p.Lys23_Val25dup'
+
+    def test_duplication_format_1letter_to_3letter(self):
+        n = HGVSName('p.K23dup')
+        assert n.format(use_3letter=True) == 'p.Lys23dup'
+
+    def test_duplication_predicted_form(self):
+        """p.(Lys23dup) — predicted form parens are stripped."""
+        n = HGVSName('p.(Lys23dup)')
+        assert n.mutation_type == 'dup'
+        assert n.start == 23
+
+
+# ---------------------------------------------------------------------------
+# HGVS stable protein categories — Insertion
+# ---------------------------------------------------------------------------
+
+class TestProteinInsertion:
+    """Tests for HGVS protein insertion expressions."""
+
+    def test_insertion_3letter(self):
+        """p.Lys23_Leu24insArgSerGln — insertion between two residues."""
+        n = HGVSName('p.Lys23_Leu24insArgSerGln')
+        assert n.mutation_type == 'ins'
+        assert n.ref_allele == 'Lys'
+        assert n.ref2_allele == 'Leu'
+        assert n.start == 23
+        assert n.end == 24
+        assert n.alt_allele == 'ArgSerGln'
+
+    def test_insertion_single_aa(self):
+        """p.Lys23_Leu24insArg — insertion of a single amino acid."""
+        n = HGVSName('p.Lys23_Leu24insArg')
+        assert n.mutation_type == 'ins'
+        assert n.alt_allele == 'Arg'
+
+    def test_insertion_1letter_alt(self):
+        """p.K23_L24insRSQ — 1-letter alt codes."""
+        n = HGVSName('p.K23_L24insRSQ')
+        assert n.mutation_type == 'ins'
+        assert n.ref_allele == 'K'
+        assert n.ref2_allele == 'L'
+        assert n.alt_allele == 'RSQ'
+
+    def test_insertion_stop_codon(self):
+        """p.Lys23_Leu24ins* — insert stop codon."""
+        n = HGVSName('p.Lys23_Leu24ins*')
+        assert n.mutation_type == 'ins'
+        assert n.alt_allele == '*'
+
+    def test_insertion_unknown_count(self):
+        """p.Lys23_Leu24ins[5] — insert unknown sequence of 5 residues."""
+        n = HGVSName('p.Lys23_Leu24ins[5]')
+        assert n.mutation_type == 'ins'
+        assert n.alt_allele == '[5]'
+
+    def test_insertion_format(self):
+        n = HGVSName('p.Lys23_Leu24insArgSerGln')
+        assert n.format() == 'p.Lys23_Leu24insArgSerGln'
+
+    def test_insertion_format_1letter(self):
+        n = HGVSName('p.Lys23_Leu24insArgSerGln')
+        assert n.format(use_3letter=False) == 'p.K23_L24insRSQ'
+
+
+# ---------------------------------------------------------------------------
+# HGVS stable protein categories — Deletion-Insertion (delins)
+# ---------------------------------------------------------------------------
+
+class TestProteinDelIns:
+    """Tests for HGVS protein deletion-insertion expressions."""
+
+    def test_single_delins_3letter(self):
+        """p.Cys28delinsTrpVal — single-residue delins."""
+        n = HGVSName('p.Cys28delinsTrpVal')
+        assert n.mutation_type == 'delins'
+        assert n.ref_allele == 'Cys'
+        assert n.start == 28
+        assert n.end == 28
+        assert n.alt_allele == 'TrpVal'
+
+    def test_single_delins_single_alt(self):
+        """p.Cys28delinsTrp."""
+        n = HGVSName('p.Cys28delinsTrp')
+        assert n.mutation_type == 'delins'
+        assert n.alt_allele == 'Trp'
+
+    def test_range_delins_3letter(self):
+        """p.Cys28_Lys29delinsTrp — range delins."""
+        n = HGVSName('p.Cys28_Lys29delinsTrp')
+        assert n.mutation_type == 'delins'
+        assert n.ref_allele == 'Cys'
+        assert n.ref2_allele == 'Lys'
+        assert n.start == 28
+        assert n.end == 29
+        assert n.alt_allele == 'Trp'
+
+    def test_delins_1letter(self):
+        n = HGVSName('p.C28delinsWV')
+        assert n.mutation_type == 'delins'
+        assert n.ref_allele == 'C'
+        assert n.alt_allele == 'WV'
+
+    def test_delins_format_single(self):
+        n = HGVSName('p.Cys28delinsTrpVal')
+        assert n.format() == 'p.Cys28delinsTrpVal'
+
+    def test_delins_format_range(self):
+        n = HGVSName('p.Cys28_Lys29delinsTrp')
+        assert n.format() == 'p.Cys28_Lys29delinsTrp'
+
+    def test_delins_format_1letter(self):
+        n = HGVSName('p.Cys28delinsTrpVal')
+        assert n.format(use_3letter=False) == 'p.C28delinsWV'
+
+    def test_delins_predicted_form(self):
+        """p.(Cys28delinsTrpVal) — predicted form parens are stripped."""
+        n = HGVSName('p.(Cys28delinsTrpVal)')
+        assert n.mutation_type == 'delins'
+        assert n.alt_allele == 'TrpVal'
+
+
+# ---------------------------------------------------------------------------
+# HGVS stable protein categories — Extension
+# ---------------------------------------------------------------------------
+
+class TestProteinExtension:
+    """Tests for HGVS protein extension expressions (N-term and C-term)."""
+
+    def test_nterm_extension_3letter(self):
+        """p.Met1ext-5 — N-terminal extension."""
+        n = HGVSName('p.Met1ext-5')
+        assert n.mutation_type == 'ext'
+        assert n.ref_allele == 'Met'
+        assert n.start == 1
+        assert n.alt_allele == ''
+        assert n.pep_extra == 'ext-5'
+
+    def test_nterm_extension_unknown(self):
+        """p.Met1ext? — N-terminal extension of unknown length."""
+        n = HGVSName('p.Met1ext?')
+        assert n.mutation_type == 'ext'
+        assert n.pep_extra == 'ext?'
+
+    def test_cterm_extension_stop_3letter(self):
+        """p.*110GlnextTer17 — C-terminal extension from stop codon."""
+        n = HGVSName('p.*110GlnextTer17')
+        assert n.mutation_type == 'ext'
+        assert n.ref_allele == '*'
+        assert n.start == 110
+        assert n.alt_allele == 'Gln'
+        assert n.pep_extra == 'extTer17'
+
+    def test_cterm_extension_ter_notation(self):
+        """p.Ter110GlnextTer17 — C-terminal extension using Ter."""
+        n = HGVSName('p.Ter110GlnextTer17')
+        assert n.mutation_type == 'ext'
+        assert n.ref_allele == 'Ter'
+        assert n.start == 110
+        assert n.alt_allele == 'Gln'
+        assert n.pep_extra == 'extTer17'
+
+    def test_extension_format_nterm(self):
+        n = HGVSName('p.Met1ext-5')
+        assert n.format() == 'p.Met1ext-5'
+
+    def test_extension_format_cterm_3letter(self):
+        n = HGVSName('p.*110GlnextTer17')
+        assert n.format(use_3letter=True) == 'p.Ter110GlnextTer17'
+
+    def test_extension_format_cterm_1letter(self):
+        """With use_3letter=False, Ter → * in pep_extra."""
+        n = HGVSName('p.*110GlnextTer17')
+        result = n.format(use_3letter=False)
+        assert 'ext*17' in result
+
+
+# ---------------------------------------------------------------------------
+# HGVS stable protein categories — Repeated Sequences
+# ---------------------------------------------------------------------------
+
+class TestProteinRepeatedSequences:
+    """Tests for HGVS protein repeated-sequence expressions."""
+
+    def test_single_repeat_3letter(self):
+        """p.Ala2[10] — 10 copies of Ala at position 2."""
+        n = HGVSName('p.Ala2[10]')
+        assert n.mutation_type == 'rep'
+        assert n.ref_allele == 'Ala'
+        assert n.start == 2
+        assert n.end == 2
+        assert n.pep_extra == '[10]'
+
+    def test_single_repeat_1letter(self):
+        n = HGVSName('p.A2[10]')
+        assert n.mutation_type == 'rep'
+        assert n.ref_allele == 'A'
+        assert n.pep_extra == '[10]'
+
+    def test_repeat_unknown_count(self):
+        """p.Ala2[?] — unknown repeat count."""
+        n = HGVSName('p.Ala2[?]')
+        assert n.mutation_type == 'rep'
+        assert n.pep_extra == '[?]'
+
+    def test_range_repeat(self):
+        """p.Ala2_Pro5[10] — repeat over a range."""
+        n = HGVSName('p.Ala2_Pro5[10]')
+        assert n.mutation_type == 'rep'
+        assert n.ref_allele == 'Ala'
+        assert n.ref2_allele == 'Pro'
+        assert n.start == 2
+        assert n.end == 5
+        assert n.pep_extra == '[10]'
+
+    def test_repeat_format_single(self):
+        n = HGVSName('p.Ala2[10]')
+        assert n.format() == 'p.Ala2[10]'
+
+    def test_repeat_format_range(self):
+        n = HGVSName('p.Ala2_Pro5[10]')
+        assert n.format() == 'p.Ala2_Pro5[10]'
+
+    def test_repeat_format_1letter_to_3letter(self):
+        n = HGVSName('p.A2[10]')
+        assert n.format(use_3letter=True) == 'p.Ala2[10]'
+
+
+# ---------------------------------------------------------------------------
+# Predicted-form bracket stripping — cross-category
+# ---------------------------------------------------------------------------
+
+class TestPredictedForms:
+    """Outer parentheses p.(...) are stripped and the inner form is parsed."""
+
+    def test_predicted_substitution(self):
+        n = HGVSName('p.(Arg54Ser)')
+        assert n.mutation_type == '>'
+        assert n.ref_allele == 'Arg'
+        assert n.alt_allele == 'Ser'
+        assert n.start == 54
+
+    def test_predicted_no_change(self):
+        n = HGVSName('p.(Glu1161=)')
+        assert n.ref_allele == 'Glu'
+        assert n.pep_extra == '='
+
+    def test_predicted_deletion_single(self):
+        n = HGVSName('p.(Lys23del)')
+        assert n.mutation_type == 'del'
+        assert n.start == 23
+
+    def test_predicted_duplication(self):
+        n = HGVSName('p.(Lys23dup)')
+        assert n.mutation_type == 'dup'
+
+    def test_predicted_delins(self):
+        n = HGVSName('p.(Cys28delinsTrpVal)')
+        assert n.mutation_type == 'delins'
+        assert n.alt_allele == 'TrpVal'
+
+    def test_predicted_frameshift_simple(self):
+        n = HGVSName('p.(Arg123fs)')
+        assert n.mutation_type == 'fs'
+        assert n.pep_extra == 'fs'
+
+    def test_predicted_frameshift_with_ter(self):
+        n = HGVSName('p.(Arg123LysfsTer34)')
+        assert n.mutation_type == 'fs'
+        assert n.alt_allele == 'Lys'
+        assert n.pep_extra == 'fsTer34'
+
+
+# ---------------------------------------------------------------------------
+# Format / round-trip for new protein mutation types
+# ---------------------------------------------------------------------------
+
+class TestNewProteinTypeFormatting:
+    """Round-trip parse → format for all new HGVS protein categories."""
+
+    @pytest.mark.parametrize('hgvs_str', [
+        # Frameshift
+        'p.Arg97fs',
+        'p.Arg97ProfsTer23',
+        'p.Ile327Argfs',
+        # Deletion
+        'p.Lys23del',
+        'p.Lys23_Val25del',
+        # Duplication
+        'p.Lys23dup',
+        'p.Lys23_Val25dup',
+        # Insertion
+        'p.Lys23_Leu24insArg',
+        'p.Lys23_Leu24insArgSerGln',
+        # DelIns
+        'p.Cys28delinsTrpVal',
+        'p.Cys28_Lys29delinsTrp',
+        # Extension
+        'p.Met1ext-5',
+        # Repeated sequences
+        'p.Ala2[10]',
+        'p.Ala2_Pro5[10]',
+    ])
+    def test_round_trip(self, hgvs_str):
+        """Parse then format should reproduce the original string."""
+        n = HGVSName(hgvs_str)
+        assert n.format() == hgvs_str, (
+            "Round-trip failed for %r: got %r" % (hgvs_str, n.format()))
+
+    @pytest.mark.parametrize('hgvs_str', [
+        'p.Arg97fs',
+        'p.Lys23del',
+        'p.Lys23dup',
+        'p.Lys23_Leu24insArg',
+        'p.Cys28delinsTrpVal',
+        'p.Ala2[10]',
+    ])
+    def test_does_not_raise(self, hgvs_str):
+        """Parsing should not raise for any listed HGVS expression."""
+        HGVSName(hgvs_str)   # must not raise
+
+
+# ---------------------------------------------------------------------------
+# HGVS stable: Substitution extended tests
+# ---------------------------------------------------------------------------
+
+class TestSubstitutionExtended:
+    """Extra substitution cases from HGVS stable recommendations."""
+
+    def test_nonsense_mutation_stop_alt(self):
+        """p.Arg213* — nonsense / stop-gain."""
+        n = HGVSName('p.Arg213*')
+        assert n.mutation_type == '>'
+        assert n.ref_allele == 'Arg'
+        assert n.alt_allele == '*'
+        assert n.start == 213
+
+    def test_stop_codon_as_ref(self):
+        """p.*45Ser — stop-loss mutation."""
+        n = HGVSName('p.*45Ser')
+        assert n.mutation_type == '>'
+        assert n.ref_allele == '*'
+        assert n.alt_allele == 'Ser'
+
+    def test_synonymous_no_change_ter_notation(self):
+        """p.Ter1161= — no-change using Ter for stop codon."""
+        n = HGVSName('p.Ter1161=')
+        assert n.ref_allele == 'Ter'
+        assert n.pep_extra == '='
+
+    def test_1letter_stop_as_ref_with_new_aa(self):
+        """p.*110Gln — stop → Gln."""
+        n = HGVSName('p.*110Gln')
+        assert n.mutation_type == '>'
+        assert n.ref_allele == '*'
+        assert n.alt_allele == 'Gln'
