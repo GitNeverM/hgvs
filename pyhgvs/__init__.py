@@ -415,13 +415,30 @@ class HGVSRegex(object):
     #   =     synonymous (no change)
     #   ?fs   uncertain frameshift
     #   ?     uncertain consequence
-    #   fs    frameshift (without uncertainty marker)
     # The alternatives are ordered longest-first so that '?fs' is preferred
     # over bare '?' when both could match.
-    PEP_EXTRA = r"(?P<extra>(?:\?fs|=|\?|fs)?)"
+    # Note: bare 'fs' is intentionally excluded here; frameshifts are now
+    # matched by the dedicated FS_* patterns below.
+    PEP_EXTRA = r"(?P<extra>(?:\?fs|=|\?)?)"
+
+    # --- Frameshift helpers (HGVS stable protein/frameshift) ---
+    # The "first new amino acid" produced by a frameshift must NOT be a stop
+    # codon (Ter/*).  If the immediate result is a stop, the variant is a
+    # nonsense substitution, not a frameshift.
+    # 3-letter non-stop: any [A-Z][a-z]{2} that is not 'Ter'
+    # 1-letter non-stop: any valid single-letter code except '*' (stop);
+    #   'X' is intentionally included as it represents an unknown amino acid.
+    FS_NEW_AA = (
+        r"(?P<fs_new_aa>"
+        r"(?:(?!Ter)[A-Z][a-z]{2}"   # 3-letter, not Ter
+        r"|[ACDEFGHIKLMNPQRSTVWYX]"  # 1-letter (including X), not *
+        r"))"
+    )
+    # Stop position in a frameshift: Ter<n>, *<n>, or *? (unknown)
+    FS_STOP = r"(?:(?:Ter|\*)(?P<fs_stop>\d+|\?))"
 
     # Peptide allele syntax
-    # Note: patterns with explicit keywords (del/dup/ins/delins) are listed
+    # Note: patterns with explicit keywords (del/dup/ins/delins/fs) are listed
     # before the generic substitution pattern so more-specific forms match first.
     # Predicted (parenthesized) forms are handled by parse_protein() which
     # strips the surrounding '(' ')' before matching.
@@ -457,6 +474,19 @@ class HGVSRegex(object):
         # Example: Glu125_Ala132delinsGlyLeuHisArgPheIleValLeu
         PEP_REF + COORD_START + "_" + PEP_REF2 + COORD_END +
         r"(?P<mutation_type>delins)" + PEP_ALT_SEQ,
+
+        # ---- Frameshift — long with stop position ----
+        # Example: Arg97ProfsTer23, Arg97Profs*23, Ile327Argfs*?
+        # The new AA must not be Ter/* (would be nonsense, not frameshift).
+        PEP_REF + COORD_START + FS_NEW_AA + r"(?P<mutation_type>fs)" + FS_STOP,
+
+        # ---- Frameshift — long without stop position ----
+        # Example: Arg97Profs  (new AA known, stop not yet determined)
+        PEP_REF + COORD_START + FS_NEW_AA + r"(?P<mutation_type>fs)",
+
+        # ---- Frameshift — short (no new AA, no stop) ----
+        # Example: Arg97fs, R97fs
+        PEP_REF + COORD_START + r"(?P<mutation_type>fs)",
 
         # ---- No peptide change ----
         # Example: Glu1161=, E1161=
@@ -1012,7 +1042,8 @@ class HGVSName(object):
     def __init__(self, name='', prefix='', chrom='', transcript='', gene='',
                  kind='', mutation_type=None, start=0, end=0, ref_allele='',
                  ref2_allele='', alt_allele='',
-                 cdna_start=None, cdna_end=None, pep_extra=''):
+                 cdna_start=None, cdna_end=None, pep_extra='',
+                 fs_new_aa='', fs_stop=None):
 
         # Full HGVS name.
         self.name = name
@@ -1036,6 +1067,9 @@ class HGVSName(object):
 
         # Protein-specific fields
         self.pep_extra = pep_extra
+        # Frameshift-specific fields (populated by parse_protein for 'fs' variants)
+        self.fs_new_aa = fs_new_aa   # first new amino acid after the frameshift
+        self.fs_stop = fs_stop       # stop position: a digit string, '?', or None
         # True when the consequence is predicted (written inside parentheses,
         # e.g. p.(Trp24Cys)).  Always ``False`` for freshly constructed objects
         # that have not been parsed from a string; set to ``True`` by
@@ -1217,7 +1251,10 @@ class HGVSName(object):
           Insertion:           His4_Gln5insAla  or  Lys2_Gly3insGlnSerLys
           Delins (single):     Asn47delinsSerSerTer  or  N47delinsST*
           Delins (range):      Glu125_Ala132delinsGlyLeuHis
-          Predicted (any):     (Trp24Cys)  (Trp24del)  (His4_Gln5insAla) …
+          Frameshift (short):  Arg97fs  or  R97fs
+          Frameshift (long):   Arg97ProfsTer23  or  Arg97Profs*23
+          Frameshift (unk stop): Ile327Argfs*?
+          Predicted (any):     (Trp24Cys)  (Trp24del)  (Arg97fs) …
           Legacy frameshift:   Glu1161_Ser1164?fs
         """
         # Handle predicted (parenthesized) forms: p.(Trp24Cys)
@@ -1237,7 +1274,7 @@ class HGVSName(object):
                 # Parse mutation type.
                 explicit_type = groups.get('mutation_type')
                 if explicit_type:
-                    # Explicit keyword: del, dup, ins, delins
+                    # Explicit keyword: del, dup, ins, delins, fs
                     self.mutation_type = explicit_type
                 elif groups.get('delins'):
                     # Legacy range indel marker
@@ -1265,6 +1302,11 @@ class HGVSName(object):
                         'alt', self.ref_allele)
 
                 self.pep_extra = groups.get('extra') or ''
+
+                # Frameshift-specific fields.
+                if self.mutation_type == 'fs':
+                    self.fs_new_aa = groups.get('fs_new_aa') or ''
+                    self.fs_stop = groups.get('fs_stop')  # e.g. '23', '?', or None
                 return
 
         raise HGVSParseError(details, 'protein allele')
@@ -1463,7 +1505,10 @@ class HGVSName(object):
           Insertion:           His4_Gln5insAla  /  Lys2_Gly3insGlnSerLys
           Delins (single):     Asn47delinsSerSerTer
           Delins (range):      Glu125_Ala132delinsGlyLeuHis
-          Predicted (any):     (Trp24Cys)  (Trp24del) …
+          Frameshift (short):  Arg97fs  /  R97fs
+          Frameshift (long):   Arg97ProfsTer23  /  Arg97Profs*23
+          Frameshift (unk):    Ile327Argfs*?
+          Predicted (any):     (Trp24Cys)  (Trp24del)  (Arg97fs) …
           Legacy range indel:  Glu1161_Ser1164?fs
         """
 
@@ -1475,8 +1520,21 @@ class HGVSName(object):
         pred_open = '(' if getattr(self, 'predicted', False) else ''
         pred_close = ')' if getattr(self, 'predicted', False) else ''
 
+        # --- Frameshift (HGVS stable protein/frameshift) ---
+        if self.mutation_type == 'fs':
+            ref = _fmt(self.ref_allele)
+            pos = str(self.start)
+            new_aa = _fmt(self.fs_new_aa) if getattr(self, 'fs_new_aa', '') else ''
+            fs_stop = getattr(self, 'fs_stop', None)
+            if fs_stop is not None:
+                stop_sym = 'Ter' if use_3letter else '*'
+                stop_str = stop_sym + str(fs_stop)
+            else:
+                stop_str = ''
+            return pred_open + ref + pos + new_aa + 'fs' + stop_str + pred_close
+
         # --- Deletion ---
-        if self.mutation_type == 'del':
+        elif self.mutation_type == 'del':
             if self.start == self.end:
                 # Single residue: Trp24del
                 return (pred_open + _fmt(self.ref_allele) +
@@ -1567,6 +1625,8 @@ class HGVSName(object):
         norm.ref_allele = normalize_aa_allele(self.ref_allele, use_3letter=True)
         norm.ref2_allele = normalize_aa_allele(self.ref2_allele, use_3letter=True)
         norm.alt_allele = normalize_aa_allele(self.alt_allele, use_3letter=True)
+        if getattr(self, 'fs_new_aa', ''):
+            norm.fs_new_aa = normalize_aa_allele(self.fs_new_aa, use_3letter=True)
         return norm
 
     def equivalent(self, other):
@@ -1602,7 +1662,10 @@ class HGVSName(object):
                     a.alt_allele == b.alt_allele and
                     a.mutation_type == b.mutation_type and
                     # Normalise pep_extra: treat '' and None as equal
-                    (a.pep_extra or '') == (b.pep_extra or ''))
+                    (a.pep_extra or '') == (b.pep_extra or '') and
+                    # Frameshift-specific fields
+                    getattr(a, 'fs_new_aa', '') == getattr(b, 'fs_new_aa', '') and
+                    getattr(a, 'fs_stop', None) == getattr(b, 'fs_stop', None))
 
         if self.kind == 'c':
             return (a.cdna_start == b.cdna_start and
