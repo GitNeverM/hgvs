@@ -87,7 +87,7 @@ OFFSET_PREFIX = '-' | '+'
 OFFSET = NUMBER
 
 # Primatives:
-NUMBER = \d+
+NUMBER = \\d+
 BASE = [ACGT]
 BASES = BASE+
 
@@ -106,6 +106,215 @@ CHROM_PREFIX = 'chr'
 CDNA_START_CODON = 'cdna_start'
 CDNA_STOP_CODON = 'cdna_stop'
 
+# ---------------------------------------------------------------------------
+# Amino acid conversion tables
+# ---------------------------------------------------------------------------
+
+#: Mapping from single-letter amino acid code to three-letter code.
+#: Includes standard 20 amino acids plus stop codon (*) and special codes.
+AA1_TO_AA3 = {
+    'A': 'Ala',
+    'C': 'Cys',
+    'D': 'Asp',
+    'E': 'Glu',
+    'F': 'Phe',
+    'G': 'Gly',
+    'H': 'His',
+    'I': 'Ile',
+    'K': 'Lys',
+    'L': 'Leu',
+    'M': 'Met',
+    'N': 'Asn',
+    'P': 'Pro',
+    'Q': 'Gln',
+    'R': 'Arg',
+    'S': 'Ser',
+    'T': 'Thr',
+    'V': 'Val',
+    'W': 'Trp',
+    'Y': 'Tyr',
+    '*': 'Ter',  # stop codon
+    'X': 'Xaa',  # unknown/any amino acid
+    'U': 'Sec',  # selenocysteine
+    'O': 'Pyl',  # pyrrolysine
+}
+
+#: Mapping from three-letter amino acid code to single-letter code.
+AA3_TO_AA1 = {v: k for k, v in AA1_TO_AA3.items()}
+# Add common alternative three-letter stop-codon representations
+AA3_TO_AA1['Trm'] = '*'
+AA3_TO_AA1['Stop'] = '*'
+
+
+def aa1_to_aa3(aa1):
+    """Convert a single-letter amino acid code (or '*') to its three-letter form.
+
+    Args:
+        aa1: Single-letter amino acid code string, e.g. ``'R'`` or ``'*'``.
+
+    Returns:
+        Three-letter code string, e.g. ``'Arg'`` or ``'Ter'``.
+
+    Raises:
+        HGVSInvalidAminoAcidError: If *aa1* is not a recognised code.
+    """
+    result = AA1_TO_AA3.get(aa1.upper() if aa1 != '*' else '*')
+    if result is None:
+        raise HGVSInvalidAminoAcidError(aa1)
+    return result
+
+
+def aa3_to_aa1(aa3):
+    """Convert a three-letter amino acid code to its single-letter form.
+
+    Args:
+        aa3: Three-letter amino acid code string, e.g. ``'Arg'`` or ``'Ter'``.
+
+    Returns:
+        Single-letter code string, e.g. ``'R'`` or ``'*'``.
+
+    Raises:
+        HGVSInvalidAminoAcidError: If *aa3* is not a recognised code.
+    """
+    # Normalise capitalisation: first letter upper, rest lower
+    normalised = aa3[0].upper() + aa3[1:].lower() if len(aa3) == 3 else aa3
+    result = AA3_TO_AA1.get(normalised)
+    if result is None:
+        raise HGVSInvalidAminoAcidError(aa3)
+    return result
+
+
+def _is_aa1(token):
+    """Return True if *token* is a valid single-letter amino acid code."""
+    return len(token) == 1 and token in AA1_TO_AA3
+
+
+def _is_aa3(token):
+    """Return True if *token* looks like a three-letter amino acid code."""
+    return len(token) == 3 and token[0].isupper() and token[1:].islower()
+
+
+def normalize_aa_allele(allele, use_3letter=True):
+    """Normalise an amino-acid allele string to a consistent notation.
+
+    Handles single-letter codes, three-letter codes, stop codons (``*`` /
+    ``Ter``), and concatenated three-letter sequences (e.g. ``GluSer``).
+
+    Args:
+        allele: Raw allele string from an HGVS protein name, e.g. ``'R'``,
+            ``'Arg'``, ``'GluSer'``, or ``'*'``.
+        use_3letter: If ``True`` (default) return the three-letter form;
+            otherwise return single-letter.
+
+    Returns:
+        Normalised allele string, or the original string if it cannot be
+        recognised (to be lenient for downstream handling).
+    """
+    if not allele:
+        return allele
+
+    # Single-letter stop codon
+    if allele == '*':
+        return 'Ter' if use_3letter else '*'
+
+    # Three-letter stop codon
+    if allele in ('Ter', 'Trm', 'Stop'):
+        return 'Ter' if use_3letter else '*'
+
+    # Single-letter amino acid
+    if _is_aa1(allele):
+        return AA1_TO_AA3[allele] if use_3letter else allele
+
+    # Three-letter amino acid
+    if _is_aa3(allele):
+        if use_3letter:
+            return allele[0].upper() + allele[1:].lower()
+        result = AA3_TO_AA1.get(allele[0].upper() + allele[1:].lower())
+        return result if result is not None else allele
+
+    # Concatenated three-letter sequence, e.g. 'GluSer'
+    if len(allele) % 3 == 0 and allele[0].isupper():
+        parts = [allele[i:i + 3] for i in range(0, len(allele), 3)]
+        if all(_is_aa3(p) for p in parts):
+            if use_3letter:
+                return ''.join(p[0].upper() + p[1:].lower() for p in parts)
+            converted = [AA3_TO_AA1.get(p[0].upper() + p[1:].lower(), p)
+                         for p in parts]
+            return ''.join(converted)
+
+    # Unknown — return as-is
+    return allele
+
+
+# ---------------------------------------------------------------------------
+# Exception hierarchy
+# ---------------------------------------------------------------------------
+
+class HGVSError(ValueError):
+    """Base class for all HGVS-related errors in this library."""
+
+
+class HGVSInvalidAminoAcidError(HGVSError):
+    """Raised when an unrecognised amino acid code is encountered."""
+
+    def __init__(self, code):
+        super(HGVSInvalidAminoAcidError, self).__init__(
+            "Unrecognised amino acid code: %r" % code)
+        self.code = code
+
+
+class HGVSParseError(HGVSError):
+    """Raised when an HGVS string cannot be parsed."""
+
+    def __init__(self, name='', part='name', reason=''):
+        if name:
+            message = 'Invalid HGVS %s "%s"' % (part, name)
+        else:
+            message = 'Invalid HGVS %s' % part
+        if reason:
+            message += ': ' + reason
+        super(HGVSParseError, self).__init__(message)
+        self.name = name
+        self.part = part
+        self.reason = reason
+
+
+class HGVSTranscriptError(HGVSError):
+    """Raised when a transcript cannot be resolved."""
+
+    def __init__(self, transcript_name='', reason=''):
+        if transcript_name:
+            message = 'Transcript not found: %r' % transcript_name
+        else:
+            message = 'Transcript resolution failed'
+        if reason:
+            message += ': ' + reason
+        super(HGVSTranscriptError, self).__init__(message)
+        self.transcript_name = transcript_name
+        self.reason = reason
+
+
+class HGVSFormattingError(HGVSError):
+    """Raised when an HGVS name cannot be formatted."""
+
+    def __init__(self, reason=''):
+        message = 'HGVS formatting failed'
+        if reason:
+            message += ': ' + reason
+        super(HGVSFormattingError, self).__init__(message)
+        self.reason = reason
+
+
+class HGVSNormalizationError(HGVSError):
+    """Raised when HGVS normalization fails."""
+
+    def __init__(self, reason=''):
+        message = 'HGVS normalization failed'
+        if reason:
+            message += ': ' + reason
+        super(HGVSNormalizationError, self).__init__(message)
+        self.reason = reason
+
 
 class HGVSRegex(object):
     """
@@ -114,8 +323,8 @@ class HGVSRegex(object):
 
     # DNA syntax
     # http://www.hgvs.org/mutnomen/standards.html#nucleotide
-    BASE = "[acgtbdhkmnrsvwyACGTBDHKMNRSVWY]|\d+"
-    BASES = "[acgtbdhkmnrsvwyACGTBDHKMNRSVWY]+|\d+"
+    BASE = r"[acgtbdhkmnrsvwyACGTBDHKMNRSVWY]|\d+"
+    BASES = r"[acgtbdhkmnrsvwyACGTBDHKMNRSVWY]+|\d+"
     DNA_REF = "(?P<ref>" + BASES + ")"
     DNA_ALT = "(?P<alt>" + BASES + ")"
 
@@ -127,17 +336,17 @@ class HGVSRegex(object):
     DUP = "(?P<mutation_type>dup)"
 
     # Simple coordinate syntax
-    COORD_START = "(?P<start>\d+)"
-    COORD_END = "(?P<end>\d+)"
+    COORD_START = r"(?P<start>\d+)"
+    COORD_END = r"(?P<end>\d+)"
     COORD_RANGE = COORD_START + "_" + COORD_END
 
     # cDNA coordinate syntax
-    CDNA_COORD = ("(?P<coord_prefix>|-|\*)(?P<coord>\d+)"
-                  "((?P<offset_prefix>-|\+)(?P<offset>\d+))?")
-    CDNA_START = ("(?P<start>(?P<start_coord_prefix>|-|\*)(?P<start_coord>\d+)"
-                  "((?P<start_offset_prefix>-|\+)(?P<start_offset>\d+))?)")
+    CDNA_COORD = (r"(?P<coord_prefix>|-|\*)(?P<coord>\d+)"
+                  r"((?P<offset_prefix>-|\+)(?P<offset>\d+))?")
+    CDNA_START = (r"(?P<start>(?P<start_coord_prefix>|-|\*)(?P<start_coord>\d+)"
+                  r"((?P<start_offset_prefix>-|\+)(?P<start_offset>\d+))?)")
     CDNA_END = (r"(?P<end>(?P<end_coord_prefix>|-|\*)(?P<end_coord>\d+)"
-                "((?P<end_offset_prefix>-|\+)(?P<end_offset>\d+))?)")
+                r"((?P<end_offset_prefix>-|\+)(?P<end_offset>\d+))?)")
     CDNA_RANGE = CDNA_START + "_" + CDNA_END
 
     # cDNA allele syntax
@@ -173,12 +382,26 @@ class HGVSRegex(object):
                            for regex in CDNA_ALLELE]
 
     # Peptide syntax
-    PEP = "([A-Z]([a-z]{2}))+"
+    # 3-letter amino acid code (any capitalised 3-char sequence, e.g. Glu, Ser)
+    PEP3 = r"(?:[A-Z][a-z]{2})+"
+    # 1-letter amino acid code or stop codon (*)
+    PEP1 = r"[ACDEFGHIKLMNPQRSTVWYX*]"
+    # Combined: tries 3-letter first, then 1-letter
+    PEP = "(?:" + PEP3 + "|" + PEP1 + ")"
+
+    # Keep the old PEP name as an alias so subclasses/external code still works
     PEP_REF = "(?P<ref>" + PEP + ")"
     PEP_REF2 = "(?P<ref2>" + PEP + ")"
     PEP_ALT = "(?P<alt>" + PEP + ")"
 
-    PEP_EXTRA = "(?P<extra>(|=|\?)(|fs))"
+    # PEP_EXTRA matches the optional suffix that follows a protein allele:
+    #   =     synonymous (no change)
+    #   ?fs   uncertain frameshift
+    #   ?     uncertain consequence
+    #   fs    frameshift (without uncertainty marker)
+    # The alternatives are ordered longest-first so that '?fs' is preferred
+    # over bare '?' when both could match.
+    PEP_EXTRA = r"(?P<extra>(?:\?fs|=|\?|fs)?)"
 
     # Peptide allele syntax
     PEP_ALLELE = [
@@ -187,7 +410,7 @@ class HGVSRegex(object):
         PEP_REF + COORD_START + PEP_EXTRA,
 
         # Peptide change
-        # Example: Glu1161Ser
+        # Example: Glu1161Ser  /  R132H
         PEP_REF + COORD_START + PEP_ALT + PEP_EXTRA,
 
         # Peptide indel
@@ -687,19 +910,13 @@ def matches_ref_allele(hgvs, genome, transcript=None):
     return genome_ref == ref
 
 
-class InvalidHGVSName(ValueError):
-    def __init__(self, name='', part='name', reason=''):
-        if name:
-            message = 'Invalid HGVS %s "%s"' % (part, name)
-        else:
-            message = 'Invalid HGVS %s' % part
-        if reason:
-            message += ': ' + reason
-        super(InvalidHGVSName, self).__init__(message)
 
-        self.name = name
-        self.part = part
-        self.reason = reason
+#: Backward-compatible alias for :class:`HGVSParseError`.
+#:
+#: .. deprecated::
+#:     Use :class:`HGVSParseError` for new code.  This alias is retained so
+#:     that existing ``except InvalidHGVSName`` handlers continue to work.
+InvalidHGVSName = HGVSParseError
 
 
 class HGVSName(object):
@@ -775,7 +992,7 @@ class HGVSName(object):
 
         # Transcript and gene given with parens.
         # example: NM_007294.3(BRCA1):c.2207A>C
-        match = re.match("^(?P<transcript>[^(]+)\((?P<gene>[^)]+)\)$", prefix)
+        match = re.match(r"^(?P<transcript>[^(]+)\((?P<gene>[^)]+)\)$", prefix)
         if match:
             self.transcript = match.group('transcript')
             self.gene = match.group('gene')
@@ -783,7 +1000,7 @@ class HGVSName(object):
 
         # Transcript and gene given with braces.
         # example: BRCA1{NM_007294.3}:c.2207A>C
-        match = re.match("^(?P<gene>[^{]+)\{(?P<transcript>[^}]+)\}$", prefix)
+        match = re.match(r"^(?P<gene>[^{]+)\{(?P<transcript>[^}]+)\}$", prefix)
         if match:
             self.transcript = match.group('transcript')
             self.gene = match.group('gene')
@@ -837,7 +1054,8 @@ class HGVSName(object):
         elif kind == "g":
             self.parse_genome(details)
         else:
-            raise NotImplementedError("unknown kind: %s" % allele)
+            raise HGVSParseError(allele, 'allele',
+                                 'unknown kind; expected "c", "p", "g", etc')
 
     def parse_cdna(self, details):
         """
@@ -890,10 +1108,15 @@ class HGVSName(object):
         """
         Parse a HGVS protein name.
 
+        Both one-letter (e.g. ``R132H``) and three-letter (e.g.
+        ``Arg132His``) amino acid notation are accepted.  Amino acid alleles
+        are stored exactly as they appear in the input string; use
+        :meth:`normalize` to obtain a canonical three-letter representation.
+
         Some examples include:
-          No change: Glu1161=
-          Change: Glu1161Ser
-          Frameshift: Glu1161_Ser1164?fs
+          No change:    Glu1161=   or  E1161=
+          Change:       Glu1161Ser or  R132H
+          Frameshift:   Glu1161_Ser1164?fs
         """
         for regex in HGVSRegex.PEP_ALLELE_REGEXES:
             match = re.match(regex, details)
@@ -924,10 +1147,10 @@ class HGVSName(object):
                     self.alt_allele = groups.get(
                         'alt', self.ref_allele)
 
-                self.pep_extra = groups.get('extra')
+                self.pep_extra = groups.get('extra') or ''
                 return
 
-        raise InvalidHGVSName(details, 'protein allele')
+        raise HGVSParseError(details, 'protein allele')
 
     def parse_genome(self, details):
         """
@@ -975,35 +1198,44 @@ class HGVSName(object):
                     self.alt_allele = self.ref_allele
                 return
 
-        raise InvalidHGVSName(details, 'genomic allele')
+        raise HGVSParseError(details, 'genomic allele')
 
     def _validate(self):
         """
         Check for internal inconsistencies in representation
         """
         if self.start > self.end:
-            raise InvalidHGVSName(reason="Coordinates are nonincreasing")
+            raise HGVSParseError(reason="Coordinates are nonincreasing")
 
     def __repr__(self):
         try:
             return "HGVSName('%s')" % self.format()
-        except NotImplementedError:
+        except (HGVSFormattingError, NotImplementedError):
             return "HGVSName('%s')" % self.name
 
     def __unicode__(self):
         return self.format()
 
-    def format(self, use_prefix=True, use_gene=True, use_counsyl=False):
-        """Generate a HGVS name as a string."""
+    def format(self, use_prefix=True, use_gene=True, use_counsyl=False,
+               use_3letter=True):
+        """Generate a HGVS name as a string.
+
+        Args:
+            use_prefix: Include a transcript/gene/chromosome prefix.
+            use_gene: Include the gene name alongside the transcript.
+            use_counsyl: Use Counsyl-style formatting conventions.
+            use_3letter: For protein (``p.``) names, use three-letter amino
+                acid codes (``True``, the default) rather than single-letter.
+        """
 
         if self.kind == 'c':
             allele = 'c.' + self.format_cdna()
         elif self.kind == 'p':
-            allele = 'p.' + self.format_protein()
+            allele = 'p.' + self.format_protein(use_3letter=use_3letter)
         elif self.kind == 'g':
             allele = 'g.' + self.format_genome()
         else:
-            raise NotImplementedError("not implemented: '%s'" % self.kind)
+            raise HGVSFormattingError("unsupported HGVS kind: %r" % self.kind)
 
         prefix = self.format_prefix(use_gene=use_gene) if use_prefix else ''
 
@@ -1079,8 +1311,8 @@ class HGVSName(object):
             return self.mutation_type
 
         else:
-            raise AssertionError(
-                "unknown mutation type: '%s'" % self.mutation_type)
+            raise HGVSFormattingError(
+                "unknown mutation type: %r" % self.mutation_type)
 
     def format_cdna(self):
         """
@@ -1092,39 +1324,122 @@ class HGVSName(object):
         """
         return self.format_cdna_coords() + self.format_dna_allele()
 
-    def format_protein(self):
+    def format_protein(self, use_3letter=True):
         """
         Generate HGVS protein name.
 
+        Args:
+            use_3letter: If ``True`` (default), amino acid alleles are
+                emitted using three-letter codes (e.g. ``Glu``, ``Ser``).
+                If ``False``, single-letter codes are used instead
+                (e.g. ``E``, ``S``).
+
         Some examples include:
-          No change: Glu1161=
-          Change: Glu1161Ser
+          No change: Glu1161=  /  E1161=
+          Change:    Glu1161Ser  /  R132H
           Frameshift: Glu1161_Ser1164?fs
         """
+
+        def _fmt(allele):
+            """Normalise *allele* according to the requested notation."""
+            return normalize_aa_allele(allele, use_3letter=use_3letter)
+
         if (self.start == self.end and
                 self.ref_allele == self.ref2_allele == self.alt_allele):
             # Match.
             # Example: Glu1161=
             pep_extra = self.pep_extra if self.pep_extra else '='
-            return self.ref_allele + str(self.start) + pep_extra
+            return _fmt(self.ref_allele) + str(self.start) + pep_extra
 
         elif (self.start == self.end and
                 self.ref_allele == self.ref2_allele and
                 self.ref_allele != self.alt_allele):
             # Change.
             # Example: Glu1161Ser
-            return (self.ref_allele + str(self.start) +
-                    self.alt_allele + self.pep_extra)
+            return (_fmt(self.ref_allele) + str(self.start) +
+                    _fmt(self.alt_allele) + (self.pep_extra or ''))
 
         elif self.start != self.end:
             # Range change.
             # Example: Glu1161_Ser1164?fs
-            return (self.ref_allele + str(self.start) + '_' +
-                    self.ref2_allele + str(self.end) +
-                    self.pep_extra)
+            return (_fmt(self.ref_allele) + str(self.start) + '_' +
+                    _fmt(self.ref2_allele) + str(self.end) +
+                    (self.pep_extra or ''))
 
         else:
-            raise NotImplementedError('protein name formatting.')
+            raise HGVSFormattingError('cannot format protein name with these fields')
+
+    def normalize(self):
+        """Return a new :class:`HGVSName` with amino acid alleles normalised to
+        three-letter codes.
+
+        For non-protein HGVS names the object is returned unchanged (a copy is
+        not made — the same object is returned because there is nothing to
+        normalise).
+
+        Returns:
+            A :class:`HGVSName` instance where protein allele fields use
+            three-letter amino acid codes.
+        """
+        if self.kind != 'p':
+            return self
+
+        import copy
+        norm = copy.copy(self)
+        norm.ref_allele = normalize_aa_allele(self.ref_allele, use_3letter=True)
+        norm.ref2_allele = normalize_aa_allele(self.ref2_allele, use_3letter=True)
+        norm.alt_allele = normalize_aa_allele(self.alt_allele, use_3letter=True)
+        return norm
+
+    def equivalent(self, other):
+        """Return ``True`` if *other* represents the same variant as this name.
+
+        Semantic equivalence is determined by normalising both names to their
+        canonical three-letter amino-acid form before comparison.  For cDNA and
+        genomic names, field-level equality is used directly.
+
+        The comparison does **not** require the transcript prefixes to match so
+        that, for example, a bare ``p.R132H`` can be compared against a fully
+        qualified ``NM_004380.2(IDH1):p.Arg132His``.
+
+        Args:
+            other: Another :class:`HGVSName` instance to compare against.
+
+        Returns:
+            ``bool``
+        """
+        if not isinstance(other, HGVSName):
+            return NotImplemented
+        if self.kind != other.kind:
+            return False
+
+        a = self.normalize()
+        b = other.normalize()
+
+        if self.kind == 'p':
+            return (a.start == b.start and
+                    a.end == b.end and
+                    a.ref_allele == b.ref_allele and
+                    a.ref2_allele == b.ref2_allele and
+                    a.alt_allele == b.alt_allele and
+                    a.mutation_type == b.mutation_type and
+                    # Normalise pep_extra: treat '' and None as equal
+                    (a.pep_extra or '') == (b.pep_extra or ''))
+
+        if self.kind == 'c':
+            return (a.cdna_start == b.cdna_start and
+                    a.cdna_end == b.cdna_end and
+                    a.ref_allele == b.ref_allele and
+                    a.alt_allele == b.alt_allele and
+                    a.mutation_type == b.mutation_type)
+
+        # Genomic
+        return (a.chrom == b.chrom and
+                a.start == b.start and
+                a.end == b.end and
+                a.ref_allele == b.ref_allele and
+                a.alt_allele == b.alt_allele and
+                a.mutation_type == b.mutation_type)
 
     def format_coords(self):
         """
@@ -1155,13 +1470,13 @@ class HGVSName(object):
 
             if not transcript.tx_position.is_forward_strand:
                 if end > start:
-                    raise AssertionError(
-                        "cdna_start cannot be greater than cdna_end")
+                    raise HGVSParseError(
+                        reason="cdna_start cannot be greater than cdna_end")
                 start, end = end, start
             else:
                 if start > end:
-                    raise AssertionError(
-                        "cdna_start cannot be greater than cdna_end")
+                    raise HGVSParseError(
+                        reason="cdna_start cannot be greater than cdna_end")
 
             if self.mutation_type == "ins":
                 # Inserts have empty interval.
@@ -1180,9 +1495,8 @@ class HGVSName(object):
             end = self.end
 
         else:
-            raise NotImplementedError(
-                'Coordinates are not available for this kind of HGVS name "%s"'
-                % self.kind)
+            raise HGVSFormattingError(
+                'Coordinates are not available for HGVS kind "%s"' % self.kind)
 
         return chrom, start, end
 
@@ -1197,8 +1511,8 @@ class HGVSName(object):
             # Indels have left-padding.
             start -= 1
         else:
-            raise NotImplementedError("Unknown mutation_type '%s'" %
-                                      self.mutation_type)
+            raise HGVSFormattingError(
+                "Unknown mutation_type %r" % self.mutation_type)
         return chrom, start, end
 
     def get_ref_alt(self, is_forward_strand=True):
@@ -1486,3 +1800,60 @@ def format_hgvs_name(chrom, offset, ref, alt, genome, transcript,
                                 use_counsyl=use_counsyl)
     return hgvs.format(use_prefix=use_prefix, use_gene=use_gene,
                        use_counsyl=use_counsyl)
+
+
+# ---------------------------------------------------------------------------
+# Public HGVS normalisation and equivalence API
+# ---------------------------------------------------------------------------
+
+def normalize_hgvs_name(hgvs_name_str, use_3letter=True):
+    """Return a canonical string form of *hgvs_name_str*.
+
+    For protein names this normalises amino acid codes to the three-letter
+    (or, if *use_3letter* is ``False``, single-letter) representation.
+    cDNA and genomic names are reformatted using the standard
+    :meth:`HGVSName.format` logic.
+
+    Args:
+        hgvs_name_str: A raw HGVS string, e.g. ``'NM_004380.2:p.R132H'``
+            or ``'p.Arg132His'``.
+        use_3letter: Controls amino acid notation for protein names.
+
+    Returns:
+        A canonical string representation of the HGVS name.
+
+    Raises:
+        HGVSParseError: If *hgvs_name_str* cannot be parsed.
+    """
+    parsed = HGVSName(hgvs_name_str)
+    return parsed.format(use_3letter=use_3letter)
+
+
+def hgvs_names_equal(name1, name2):
+    """Return ``True`` if *name1* and *name2* represent the same variant.
+
+    Both arguments may be HGVS strings or :class:`HGVSName` instances.
+    Amino acid notation differences (1-letter vs 3-letter, stop codon
+    representations ``*`` vs ``Ter``) are normalised before comparison so
+    that, for example::
+
+        hgvs_names_equal('p.R132H', 'p.Arg132His')  # True
+        hgvs_names_equal('p.Arg132*', 'p.Arg132Ter')  # True
+
+    Transcript prefixes are **ignored** for the purpose of this comparison.
+
+    Args:
+        name1: HGVS string or :class:`HGVSName`.
+        name2: HGVS string or :class:`HGVSName`.
+
+    Returns:
+        ``bool``
+
+    Raises:
+        HGVSParseError: If either argument is a string that cannot be parsed.
+    """
+    if isinstance(name1, str):
+        name1 = HGVSName(name1)
+    if isinstance(name2, str):
+        name2 = HGVSName(name2)
+    return name1.equivalent(name2)

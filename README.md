@@ -167,3 +167,158 @@ The library does assume that genome sequence is available through a `pyfaidx`
 compatible `Fasta` object. For an example of writing a wrapper for
 a different genome sequence back-end, see
 [hgvs.tests.genome.MockGenome](pyhgvs/tests/genome.py).
+
+---
+
+## New features (GitNeverM fork)
+
+### Protein HGVS: 1-letter and 3-letter amino acid support
+
+Both single-letter (`p.R132H`) and three-letter (`p.Arg132His`) amino acid
+notation are now parsed and can be compared for semantic equivalence:
+
+```python
+import pyhgvs as hgvs
+
+# Parse single-letter notation
+n1 = hgvs.HGVSName('p.R132H')
+print(n1.ref_allele)   # 'R'
+print(n1.alt_allele)   # 'H'
+
+# Parse three-letter notation
+n2 = hgvs.HGVSName('p.Arg132His')
+print(n2.ref_allele)   # 'Arg'
+
+# Semantic equivalence comparison (ignores notation and transcript prefix)
+hgvs.hgvs_names_equal('p.R132H', 'p.Arg132His')              # True
+hgvs.hgvs_names_equal('p.Arg132*', 'p.Arg132Ter')            # True
+hgvs.hgvs_names_equal('NM_004380.2:p.R132H', 'p.Arg132His')  # True
+
+# Direct method comparison
+n1.equivalent(n2)  # True
+```
+
+### Canonical HGVS normalisation
+
+```python
+hgvs.normalize_hgvs_name('p.R132H')                    # 'p.Arg132His'
+hgvs.normalize_hgvs_name('p.Arg132His', use_3letter=False)  # 'p.R132H'
+hgvs.normalize_hgvs_name('c.395G>A')                   # 'c.395G>A' (unchanged)
+```
+
+### Configurable protein formatting
+
+```python
+n = hgvs.HGVSName('p.Arg132His')
+n.format()                  # 'p.Arg132His'   (default: 3-letter)
+n.format(use_3letter=False) # 'p.R132H'       (1-letter output)
+
+# Works from 1-letter parsed input too
+n2 = hgvs.HGVSName('p.R132H')
+n2.format(use_3letter=True) # 'p.Arg132His'
+```
+
+### Amino acid conversion utilities
+
+```python
+from pyhgvs import aa1_to_aa3, aa3_to_aa1, normalize_aa_allele
+
+aa1_to_aa3('R')   # 'Arg'
+aa3_to_aa1('His') # 'H'
+aa1_to_aa3('*')   # 'Ter'  (stop codon)
+aa3_to_aa1('Ter') # '*'
+
+normalize_aa_allele('R',   use_3letter=True)  # 'Arg'
+normalize_aa_allele('Arg', use_3letter=False) # 'R'
+```
+
+### Structured exception hierarchy
+
+All library errors are now subclasses of `HGVSError(ValueError)`:
+
+| Class | Meaning |
+|---|---|
+| `HGVSError` | Base class for all library errors |
+| `HGVSParseError` | Parse failure (alias: `InvalidHGVSName`) |
+| `HGVSTranscriptError` | Transcript resolution failure |
+| `HGVSFormattingError` | Formatting failure |
+| `HGVSNormalizationError` | Normalisation failure |
+| `HGVSInvalidAminoAcidError` | Unrecognised amino acid code |
+
+Existing code that catches `InvalidHGVSName` or `ValueError` continues to work.
+
+```python
+from pyhgvs import HGVSParseError, InvalidHGVSName  # same object
+
+try:
+    hgvs.HGVSName('p.ZZZ')
+except InvalidHGVSName as e:   # or HGVSParseError, or ValueError
+    print(e)
+```
+
+### GRCh38 and MANE-aware transcript lookup
+
+The `TranscriptLookup` class provides a lightweight, policy-driven transcript
+store that supports version-aware lookups and optional MANE annotation.
+
+#### Downloading data files
+
+**GRCh38 RefSeq transcripts** (from UCSC):
+```sh
+wget https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/refGene.txt.gz
+gunzip refGene.txt.gz
+```
+
+**MANE summary** (from NCBI — check for the latest version):
+```sh
+wget https://ftp.ncbi.nlm.nih.gov/refseq/MANE/MANE_human/current/MANE.GRCh38.v1.3.summary.txt.gz
+gunzip MANE.GRCh38.v1.3.summary.txt.gz
+```
+
+#### Usage
+
+```python
+from pyhgvs.utils import TranscriptLookup
+
+store = TranscriptLookup()
+
+# Load GRCh38 RefSeq transcripts
+with open('refGene.txt') as f:
+    store.load_refgene(f, genome_build='GRCh38')
+
+# Optionally annotate with MANE status
+with open('MANE.GRCh38.v1.3.summary.txt') as f:
+    store.load_mane_summary(f)
+
+# Lookup policies
+tx = store.get('NM_004380')          # latest version
+tx = store.get('NM_004380.2')        # exact version
+tx = store.get('NM_004380', policy='mane_select')  # prefer MANE Select
+tx = store.get('NM_004380', policy='exact')        # versioned only
+
+# Direct MANE Select lookup by gene symbol
+mane_tx = store.get_mane_select('IDH1')
+```
+
+The `TranscriptLookup` object can be used as the `get_transcript` callback in
+`parse_hgvs_name`:
+
+```python
+import pyhgvs as hgvs
+
+chrom, start, ref, alt = hgvs.parse_hgvs_name(
+    'NM_004380.2:c.395G>A',
+    genome,
+    get_transcript=store.get)
+```
+
+## Tests
+
+Run the test suite with:
+
+```sh
+python -m pytest pyhgvs/tests/
+```
+
+The `test_protein_matching.py` module covers all new protein parsing,
+formatting, normalisation and equivalence features.
