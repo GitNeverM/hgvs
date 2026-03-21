@@ -737,16 +737,15 @@ class TestNormalizeVariantBlockSubstitution:
     def test_unequal_delins_still_correct(self):
         """
         A non-equal-length delins (e.g. 3 del, 1 ins) correctly represents
-        the event without spurious extra padding.  After trimming common
-        suffix the alt is empty of common chars but ref is not empty.
-        The deleted sequence ends in 'T' which also ends the single-base
-        insertion, so trimming leaves ref='CG' and alt='' which triggers
-        the INDEL pad.  Both alleles remain non-empty for the complex case.
+        the event without spurious extra padding.
+
+        Simulate anchor+ref='CCGT', anchor+alt='CT' (3-base ref, 1-base ins,
+        both including the 'C' anchor prepended by get_vcf_coords/get_vcf_allele).
+        Trimming proceeds: prefix 'C' -> ['CGT','T'] -> suffix 'T' ->
+        ['CG', ''].  alt becomes empty, so empty_seq=True and 1 bp padding
+        IS applied.  After padding both alleles are non-empty.
         """
         from ..variants import NormalizedVariant
-        # Simulate anchor+ref='CCGT', anchor+alt='CT' (delins 3->1)
-        # -> prefix 'C' trimmed -> ['CGT','T'] -> suffix 'T' trimmed ->
-        # ['CG', ''] -> empty_seq=True -> pad.
         pos = self._make_pos(100, 104)
         nv = NormalizedVariant(pos, 'CCGT', ['CT'],
                                seq_5p='AAAAC', seq_3p='GGGG')
@@ -758,14 +757,15 @@ class TestNormalizeVariantBlockSubstitution:
         A triallelic variant where all post-trim alleles are non-empty must
         not be padded (regression: the old uniq_starts>1 condition padded
         even valid multi-allelic block substitutions).
+
+        'TGGC' vs 'TGGA' vs 'TGAC': trim 'TG' prefix (added by
+        get_vcf_coords/get_vcf_allele) -> 'GC','GA','AC'.  None is empty
+        so no 1 bp anchor is added.
         """
         from ..variants import NormalizedVariant
-        # 'TGGC' vs 'TGGA' vs 'TGAC': trim 'TG' prefix -> 'GC','GA','AC'
-        # None is empty -> no pad.
         pos = self._make_pos(100, 104)
         nv = NormalizedVariant(pos, 'TGGC', ['TGGA', 'TGAC'],
                                seq_5p='AAAATG', seq_3p='GGGG')
         assert '1bp pad' not in nv.log
         # All alleles non-empty.
         assert all(a for a in nv.alleles)
-
