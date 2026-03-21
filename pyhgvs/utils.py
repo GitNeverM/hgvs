@@ -420,10 +420,10 @@ class TranscriptLookup(object):
                   transcripts are sorted by genomic span (largest first).
                 - ``'longest'``: Sort purely by genomic span, largest first.
                   MANE status is ignored.
-                - ``'random'``: No ordering is applied; the list is returned
-                  in insertion order.  Use this when you only need all
-                  transcripts and do not care about their order (avoids the
-                  sorting overhead).
+                - ``'random'``: Return transcripts in insertion order without
+                  sorting (equivalent to ``None``).  Use this when you only
+                  need all transcripts and do not care about their relative
+                  order (avoids the sorting overhead).
 
             return_id: If ``True``, return a list of transcript accessions
                 (``full_name``, e.g. ``'NM_007294.3'``) instead of

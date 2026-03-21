@@ -975,15 +975,43 @@ _indel_mutation_types = set(['ins', 'del', 'dup', 'delins'])
 
 
 def get_vcf_allele(hgvs, genome, transcript=None):
-    """Get an VCF-style allele from a HGVSName, a genome, and a transcript."""
+    """Get a VCF-style allele from a HGVSName, a genome, and a transcript.
+
+    For true insertions (``ins``), deletions (``del``), and duplications
+    (``dup``) the reference allele is inherently empty (for ins/dup) or the
+    alternate allele is empty (for del), so a one-base VCF anchor is always
+    required and is prepended to the alternate allele here.
+
+    For ``delins`` variants (complex substitutions / block substitutions /
+    MNVs), the situation is different:
+    - When both the reference sequence and the replacement (alt) sequence are
+      non-empty after stripping the anchor added by ``get_vcf_coords``, *no*
+      anchor is needed in ``get_vcf_allele``.  ``normalize_variant`` will add
+      an anchor via ``_1bp_pad`` only if a subsequent trimming step produces
+      an empty allele (true indel after simplification).
+    - When the alt is empty (unusual—essentially a pure deletion encoded as
+      delins), or when the ref without the anchor is empty (degenerate case),
+      we fall back to the anchor-prepend logic.
+    """
     chrom, start, end = hgvs.get_vcf_coords(transcript)
     _, alt = hgvs.get_ref_alt(
         transcript.tx_position.is_forward_strand if transcript else True)
     ref = get_genomic_sequence(genome, chrom, start, end)
 
     if hgvs.mutation_type in _indel_mutation_types:
-        # Left-pad alternate allele.
-        alt = ref[0] + alt
+        if hgvs.mutation_type == 'delins' and alt and len(ref) > 1:
+            # Both the replacement allele (alt) and the non-anchor reference
+            # (ref[1:]) are non-empty: this is a block substitution / MNV /
+            # complex delins.  Undo the left-shift from get_vcf_coords and
+            # return the raw event boundaries so that normalize_variant can
+            # determine on its own whether a VCF anchor is needed.
+            start += 1
+            ref = ref[1:]
+        else:
+            # For del, ins, dup – and for the rare delins where alt is empty
+            # or the ref collapsed to a single anchor base – an anchor base is
+            # required by the VCF spec.  Left-pad the alternate allele.
+            alt = ref[0] + alt
     return chrom, start, end, ref, alt
 
 
