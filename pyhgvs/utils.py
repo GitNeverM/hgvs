@@ -220,6 +220,22 @@ class TranscriptLookup(object):
                 self._by_ensembl[bare] = transcript
             # else: keep the existing mapping
 
+    def _transcript_length(self, transcript):
+        """Return a stable transcript length for sorting.
+
+        Prefer summed exon length (spliced transcript length). Fall back to
+        transcript genomic span when exons are unavailable.
+        """
+        if getattr(transcript, 'exons', None):
+            return sum(
+                exon.tx_position.chrom_stop - exon.tx_position.chrom_start
+                for exon in transcript.exons
+            )
+        return (
+            transcript.tx_position.chrom_stop -
+            transcript.tx_position.chrom_start
+        )
+    
     def load_refgene(self, infile, genome_build=None):
         """Load transcripts from a RefGene (GenePred extension) file.
 
@@ -404,7 +420,7 @@ class TranscriptLookup(object):
                   transcripts are sorted by genomic span (largest first).
                 - ``'longest'``: Sort purely by genomic span, largest first.
                   MANE status is ignored.
-                - ``'random'``: No ordering is applied; the list is returned
+                - ``None``: No ordering is applied; the list is returned
                   in insertion order.  Use this when you only need all
                   transcripts and do not care about their order (avoids the
                   sorting overhead).
@@ -423,7 +439,7 @@ class TranscriptLookup(object):
             ValueError: If *sort_policy* is not one of ``'mane'``,
                 ``'longest'``, or ``'random'``.
         """
-        _VALID_POLICIES = ('mane', 'longest', 'random')
+        _VALID_POLICIES = ('mane', 'longest', None)
         if sort_policy not in _VALID_POLICIES:
             raise ValueError(
                 "sort_policy must be one of %r; got %r"
@@ -432,11 +448,6 @@ class TranscriptLookup(object):
         transcripts = self._by_gene.get(gene_name, [])
         if not transcripts:
             return []
-
-        def _span(tx):
-            """Genomic span of the transcript (txEnd - txStart)."""
-            return (tx.tx_position.chrom_stop -
-                    tx.tx_position.chrom_start)
 
         if sort_policy == 'mane':
             def _mane_key(tx):
@@ -449,14 +460,14 @@ class TranscriptLookup(object):
                     tier = 2
                 # Within the same tier, longer transcripts come first
                 # (negate span so that larger values sort earlier).
-                return (tier, -_span(tx))
+                return (tier, -self._transcript_length(tx))
             transcripts = sorted(transcripts, key=_mane_key)
 
         elif sort_policy == 'longest':
-            transcripts = sorted(transcripts, key=_span, reverse=True)
+            transcripts = sorted(transcripts, key=self._transcript_length, reverse=True)
 
         else:
-            # sort_policy == 'random': return in insertion order; no sort needed.
+            # sort_policy == None: return in insertion order; no sort needed.
             # Return a copy so callers cannot accidentally mutate the internal
             # index list.
             transcripts = list(transcripts)
