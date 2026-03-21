@@ -147,6 +147,11 @@ class TranscriptLookup(object):
         tx = store.get('NM_004380.2')          # exact version
         tx = store.get_mane_select('IDH1')     # MANE Select for gene
 
+        # Retrieve all transcripts for a gene, MANE Select first:
+        txs = store.get_gene_transcripts('IDH1')
+        # Retrieve transcript accessions only:
+        ids = store.get_gene_transcripts('IDH1', return_id=True)
+
     After loading a MANE summary, Ensembl accessions are also accepted::
 
         store.load_mane_summary(open('MANE.GRCh38.vX.summary.txt'))
@@ -179,6 +184,10 @@ class TranscriptLookup(object):
         # Maps Ensembl accession (versioned and bare) → Transcript
         # Populated by load_mane_summary().
         self._by_ensembl = {}
+        # Maps gene symbol → list of Transcripts (all versions).
+        # Populated by add(); provides O(1) gene-level lookup without a
+        # full-store linear scan.
+        self._by_gene = {}
 
     def add(self, transcript):
         """Add a :class:`~pyhgvs.models.Transcript` to the store."""
@@ -188,6 +197,9 @@ class TranscriptLookup(object):
         self._by_name[transcript.name].sort(
             key=lambda t: t.version if t.version is not None else -1,
             reverse=True)
+        # Index by gene symbol for get_gene_transcripts()
+        gene_sym = transcript.gene.name
+        self._by_gene.setdefault(gene_sym, []).append(transcript)
 
     def _index_ensembl(self, ensembl_nuc, transcript):
         """Register *transcript* under its Ensembl accession.
@@ -378,6 +390,80 @@ class TranscriptLookup(object):
                     tx.gene.name == gene_symbol):
                 return tx
         return None
+
+    def get_gene_transcripts(self, gene_name, sort_policy="mane",
+                             return_id=False):
+        """Return all transcripts for *gene_name*.
+
+        Args:
+            gene_name: HGNC gene symbol (e.g. ``'BRCA1'``).
+            sort_policy: Controls the order of the returned list.
+
+                - ``'mane'`` (default): MANE Select transcripts first, then
+                  MANE Plus Clinical, then the rest; within each tier,
+                  transcripts are sorted by genomic span (largest first).
+                - ``'longest'``: Sort purely by genomic span, largest first.
+                  MANE status is ignored.
+                - ``'random'``: No ordering is applied; the list is returned
+                  in insertion order.  Use this when you only need all
+                  transcripts and do not care about their order (avoids the
+                  sorting overhead).
+
+            return_id: If ``True``, return a list of transcript accessions
+                (``full_name``, e.g. ``'NM_007294.3'``) instead of
+                :class:`~pyhgvs.models.Transcript` objects.
+
+        Returns:
+            A list of :class:`~pyhgvs.models.Transcript` objects when
+            *return_id* is ``False``, or a list of ``str`` accessions when
+            *return_id* is ``True``.  Returns an empty list when *gene_name*
+            is not found in the store.
+
+        Raises:
+            ValueError: If *sort_policy* is not one of ``'mane'``,
+                ``'longest'``, or ``'random'``.
+        """
+        _VALID_POLICIES = ('mane', 'longest', 'random')
+        if sort_policy not in _VALID_POLICIES:
+            raise ValueError(
+                "sort_policy must be one of %r; got %r"
+                % (_VALID_POLICIES, sort_policy))
+
+        transcripts = self._by_gene.get(gene_name, [])
+        if not transcripts:
+            return []
+
+        def _span(tx):
+            """Genomic span of the transcript (txEnd - txStart)."""
+            return (tx.tx_position.chrom_stop -
+                    tx.tx_position.chrom_start)
+
+        if sort_policy == 'mane':
+            def _mane_key(tx):
+                # Tier: 0 = MANE Select, 1 = MANE Plus Clinical, 2 = other.
+                if getattr(tx, 'is_mane_select', False):
+                    tier = 0
+                elif getattr(tx, 'is_mane_plus_clinical', False):
+                    tier = 1
+                else:
+                    tier = 2
+                # Within the same tier, longer transcripts come first
+                # (negate span so that larger values sort earlier).
+                return (tier, -_span(tx))
+            transcripts = sorted(transcripts, key=_mane_key)
+
+        elif sort_policy == 'longest':
+            transcripts = sorted(transcripts, key=_span, reverse=True)
+
+        else:
+            # sort_policy == 'random': return in insertion order; no sort needed.
+            # Return a copy so callers cannot accidentally mutate the internal
+            # index list.
+            transcripts = list(transcripts)
+
+        if return_id:
+            return [tx.full_name for tx in transcripts]
+        return transcripts
 
     def __contains__(self, name):
         if name.startswith('ENST'):
