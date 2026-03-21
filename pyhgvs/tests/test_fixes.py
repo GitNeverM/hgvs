@@ -485,3 +485,161 @@ class TestMiscParsing:
         h = _parse('BRCA1:c.101dupA')
         r = repr(h)
         assert 'BRCA1' in r
+
+
+# ---------------------------------------------------------------------------
+# 10. get_gene_transcripts
+# ---------------------------------------------------------------------------
+
+# RefGene lines for three transcripts of BRCA1 with different spans so that
+# sorting by length is testable.  txStart / txEnd values are chosen to give
+# distinct spans:
+#   NM_007294.3  span = 41277500 - 41196311 = 81189   (medium)
+#   NM_007295.4  span = 40000000 - 39900000 = 100000  (longest)
+#   NM_007296.3  span = 50000000 - 49990000 = 10000   (shortest)
+# All assigned to gene BRCA1.
+
+def _make_refgene_line(tx_id, chrom, strand, tx_start, tx_end, gene,
+                       cds_start=None, cds_end=None):
+    """Build a minimal but syntactically valid GenePred-extension line."""
+    if cds_start is None:
+        cds_start = tx_start + 1000
+    if cds_end is None:
+        cds_end = tx_end - 1000
+    # One exon covering the whole transcript
+    exon_starts = '%d,' % tx_start
+    exon_ends = '%d,' % tx_end
+    return (
+        '0\t%(id)s\t%(chrom)s\t%(strand)s\t%(start)d\t%(end)d\t'
+        '%(cds_start)d\t%(cds_end)d\t1\t%(exon_starts)s\t%(exon_ends)s\t'
+        '0\t%(gene)s\tcmpl\tcmpl\t0,' % dict(
+            id=tx_id, chrom=chrom, strand=strand,
+            start=tx_start, end=tx_end,
+            cds_start=cds_start, cds_end=cds_end,
+            exon_starts=exon_starts, exon_ends=exon_ends,
+            gene=gene)
+    )
+
+
+# Three BRCA1 isoforms with deliberately different spans
+_REFGENE_THREE = '\n'.join([
+    # NM_007294.3  span = 81189 (medium)
+    _make_refgene_line('NM_007294.3', 'chr17', '-', 41196311, 41277500, 'BRCA1'),
+    # NM_007295.4  span = 100000 (longest)
+    _make_refgene_line('NM_007295.4', 'chr17', '-', 39900000, 40000000, 'BRCA1'),
+    # NM_007296.3  span = 10000 (shortest)
+    _make_refgene_line('NM_007296.3', 'chr17', '-', 49990000, 50000000, 'BRCA1'),
+    # A different gene – should not appear in BRCA1 results
+    _make_refgene_line('NM_000059.3', 'chr13', '+', 32889644, 32973809, 'BRCA2'),
+])
+# MANE summary: NM_007294.3 is MANE Select, NM_007295.4 is MANE Plus Clinical
+_MANE_THREE = (
+    '#NCBI_GeneID\tEnsembl_Gene\tHGNC_ID\tsymbol\tname\t'
+    'RefSeq_nuc\tRefSeq_prot\tEnsembl_nuc\tEnsembl_prot\tMANE_status\n'
+    '672\tENSG00000012048\tHGNC:1100\tBRCA1\tBRCA1 select\t'
+    'NM_007294.3\tNP_009225.1\tENST00000357654.9\tENSP00000350283.3\tMANE Select\n'
+    '672\tENSG00000012048\tHGNC:1100\tBRCA1\tBRCA1 plus clinical\t'
+    'NM_007295.4\tNP_009226.2\tENST00000493795.5\tENSP00000417438.2\tMANE Plus Clinical\n'
+)
+
+
+@pytest.fixture
+def store_three():
+    """TranscriptLookup with three BRCA1 isoforms and MANE annotations."""
+    store = TranscriptLookup()
+    store.load_refgene(io.StringIO(_REFGENE_THREE))
+    store.load_mane_summary(io.StringIO(_MANE_THREE))
+    return store
+
+
+class TestGetGeneTranscripts:
+    """Tests for TranscriptLookup.get_gene_transcripts()."""
+
+    # 1. Basic: gene exists → returns all transcripts for that gene
+    def test_returns_all_transcripts_for_gene(self, store_three):
+        txs = store_three.get_gene_transcripts('BRCA1')
+        assert len(txs) == 3
+
+    # 2. Returned objects are Transcript instances by default
+    def test_returns_transcript_objects_by_default(self, store_three):
+        from ..models import Transcript
+        txs = store_three.get_gene_transcripts('BRCA1')
+        assert all(isinstance(tx, Transcript) for tx in txs)
+
+    # 3. sort_policy="mane": MANE Select is first
+    def test_mane_policy_select_is_first(self, store_three):
+        txs = store_three.get_gene_transcripts('BRCA1', sort_policy='mane')
+        assert getattr(txs[0], 'is_mane_select', False) is True
+
+    # 4. sort_policy="mane": MANE Plus Clinical is second
+    def test_mane_policy_plus_clinical_is_second(self, store_three):
+        txs = store_three.get_gene_transcripts('BRCA1', sort_policy='mane')
+        assert getattr(txs[1], 'is_mane_plus_clinical', False) is True
+
+    # 5. sort_policy="mane": last transcript is neither MANE Select nor Plus
+    def test_mane_policy_rest_is_last(self, store_three):
+        txs = store_three.get_gene_transcripts('BRCA1', sort_policy='mane')
+        assert not getattr(txs[2], 'is_mane_select', False)
+        assert not getattr(txs[2], 'is_mane_plus_clinical', False)
+
+    # 6. sort_policy="longest": sorted by span descending
+    def test_longest_policy_descending_span(self, store_three):
+        txs = store_three.get_gene_transcripts('BRCA1', sort_policy='longest')
+        spans = [
+            tx.tx_position.chrom_stop - tx.tx_position.chrom_start
+            for tx in txs
+        ]
+        assert spans == sorted(spans, reverse=True)
+
+    # 7. sort_policy="random": all transcripts returned (no ordering guarantee)
+    def test_random_policy_returns_all(self, store_three):
+        txs = store_three.get_gene_transcripts('BRCA1', sort_policy='random')
+        assert len(txs) == 3
+
+    # 8. return_id=True → list of str (full_name)
+    def test_return_id_true_returns_strings(self, store_three):
+        ids = store_three.get_gene_transcripts('BRCA1', return_id=True)
+        assert all(isinstance(i, str) for i in ids)
+        assert len(ids) == 3
+
+    # 9. return_id=True values match full_name (versioned accession)
+    def test_return_id_values_are_full_names(self, store_three):
+        ids = store_three.get_gene_transcripts('BRCA1', return_id=True)
+        expected = {'NM_007294.3', 'NM_007295.4', 'NM_007296.3'}
+        assert set(ids) == expected
+
+    # 10. Unknown gene → empty list (no exception)
+    def test_unknown_gene_returns_empty_list(self, store_three):
+        result = store_three.get_gene_transcripts('UNKNOWN_GENE_XYZ')
+        assert result == []
+
+    # 11. Invalid sort_policy → ValueError
+    def test_invalid_sort_policy_raises_value_error(self, store_three):
+        with pytest.raises(ValueError):
+            store_three.get_gene_transcripts('BRCA1', sort_policy='invalid')
+
+    # 12. Results for one gene do not include transcripts from another gene
+    def test_does_not_include_other_genes(self, store_three):
+        txs = store_three.get_gene_transcripts('BRCA1')
+        genes = {tx.gene.name for tx in txs}
+        assert genes == {'BRCA1'}
+
+    # 13. mane sort – within same tier, longer transcript comes first.
+    #     NM_007296.3 is "other" (tier 2) span=10000; to test intra-tier
+    #     ordering we need two non-MANE transcripts.  We build a fresh store.
+    def test_mane_policy_intra_tier_longest_first(self):
+        refgene = '\n'.join([
+            # short non-MANE
+            _make_refgene_line('NM_000001.1', 'chr1', '+', 1000, 2000, 'GENE1'),
+            # long non-MANE
+            _make_refgene_line('NM_000002.1', 'chr1', '+', 1000, 5000, 'GENE1'),
+        ])
+        store = TranscriptLookup()
+        store.load_refgene(io.StringIO(refgene))
+        txs = store.get_gene_transcripts('GENE1', sort_policy='mane')
+        # Both are "other" tier; longer (span=4000) must come first
+        spans = [
+            tx.tx_position.chrom_stop - tx.tx_position.chrom_start
+            for tx in txs
+        ]
+        assert spans[0] >= spans[1]
