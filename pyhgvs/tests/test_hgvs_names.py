@@ -677,33 +677,33 @@ _name_variants = [
 
     # Indels.
     ('NM_000018.3:c.922_930delGCAGAGGTGinsTCAAAGCAC',
-     ('chr17', 7126028, 'AGCAGAGGTG', 'ATCAAAGCAC'), False, True),
+     ('chr17', 7126029, 'GCAGAGGTG', 'TCAAAGCAC'), False, True),
     ('NM_000018.3:c.1077_1077+1delGGinsCAC',
-     ('chr17', 7126183, 'CGG', 'CCAC'), True, True),
+     ('chr17', 7126184, 'GG', 'CAC'), True, True),
     ('NM_000019.3:c.163_167delTTTTTinsAA',
-     ('chr11', 108004588, 'TTTTTT', 'TAA'), False, True),
+     ('chr11', 108004589, 'TTTTT', 'AA'), False, True),
     ('NM_000022.2:c.781-3_781delCAGAinsTGGAAGAGCAGATCTGG',
-     ('chr20', 43251292, 'ATCTG', 'ACCAGATCTGCTCTTCCA'), False, True),
+     ('chr20', 43251293, 'TCTG', 'CCAGATCTGCTCTTCCA'), False, True),
     ('NM_000023.2:c.585-2_585-1delAGinsT',
-     ('chr17', 48246450, 'CAG', 'CT'), True, True),
+     ('chr17', 48246451, 'AG', 'T'), True, True),
     ('NM_000030.2:c.2_3delTGinsAT',
-     ('chr2', 241808283, 'ATG', 'AAT'), True, True),
+     ('chr2', 241808284, 'TG', 'AT'), True, True),
     ('NM_000030.2:c.2_3del2ins2',
-     ('chr2', 241808283, 'ATG', 'ANN'), False, True),
+     ('chr2', 241808284, 'TG', 'NN'), False, True),
     ('NM_007294.3:c.4185+2_4185+22del21insA',
-     ('chr17', 41242938, 'GCACACACACACACGCTTTTTA', 'GT'), False, True),
+     ('chr17', 41242939, 'CACACACACACACGCTTTTTA', 'T'), False, True),
 
     # Single letter del and insert.
     ('NM_000016.4:c.945+4delAinsGC',
-     ('chr1', 76216234, 'AA', 'AGC'), True, True),
+     ('chr1', 76216235, 'A', 'GC'), True, True),
     ('NM_000030.2:c.308delGinsTCCTGGTTGA',
-     ('chr2', 241808728, 'GG', 'GTCCTGGTTGA'), False, True),
+     ('chr2', 241808729, 'G', 'TCCTGGTTGA'), False, True),
     ('NM_000038.5:c.1617delCinsGAA',
-     ('chr5', 112163693, 'AC', 'AGAA'), True, True),
+     ('chr5', 112163694, 'C', 'GAA'), True, True),
     ('NM_000038.5:c.4256delGinsCC',
-     ('chr5', 112175546, 'AG', 'ACC'), True, True),
+     ('chr5', 112175547, 'G', 'CC'), True, True),
     ('NM_000038.5:c.4256delGins5',
-     ('chr5', 112175546, 'AG', 'ANNNNN'), False, True),
+     ('chr5', 112175547, 'G', 'NNNNN'), False, True),
 
     # Delete region.
     ('NM_000016.4:c.291_296delTCTTGG',
@@ -751,10 +751,10 @@ _name_variants = [
 
     # Genomic indels.
     ('chr17:g.7126029_7126037delGCAGAGGTGinsTCAAAGCAC',
-     ('chr17', 7126028, 'AGCAGAGGTG', 'ATCAAAGCAC'), False, True),
+     ('chr17', 7126029, 'GCAGAGGTG', 'TCAAAGCAC'), False, True),
 
     # Genomic single letter del and insert.
-    ('chr1:g.76216235delAinsGC', ('chr1', 76216234, 'AA', 'AGC'),
+    ('chr1:g.76216235delAinsGC', ('chr1', 76216235, 'A', 'GC'),
      False, True),
 
     # Genomic delete region.
