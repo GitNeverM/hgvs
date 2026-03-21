@@ -12,8 +12,12 @@ from .. import (
     CDNA_STOP_CODON,
     HGVSName,
     HGVSParseError,
+    get_vcf_allele,
+    normalize_variant,
+    parse_hgvs_name,
 )
-from ..utils import TranscriptLookup, read_transcripts
+from ..utils import TranscriptLookup, make_transcript, read_transcripts
+from .genome import MockGenome
 
 
 # ---------------------------------------------------------------------------
@@ -769,3 +773,409 @@ class TestNormalizeVariantBlockSubstitution:
         assert '1bp pad' not in nv.log
         # All alleles non-empty.
         assert all(a for a in nv.alleles)
+
+
+# ---------------------------------------------------------------------------
+# 12. get_vcf_allele: intermediate output tests
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Shared fixture helpers for end-to-end and get_vcf_allele tests
+# ---------------------------------------------------------------------------
+
+def _make_fwd_transcript(tx_id='NM_T001.1', chrom='chr1',
+                         tx_start=0, tx_end=500,
+                         cds_start=0, cds_end=500,
+                         gene='TESTGENE'):
+    """Return a simple single-exon forward-strand Transcript."""
+    return make_transcript({
+        'id': tx_id,
+        'chrom': chrom,
+        'strand': '+',
+        'start': tx_start,
+        'end': tx_end,
+        'cds_start': cds_start,
+        'cds_end': cds_end,
+        'gene_name': gene,
+        'exons': [(tx_start, tx_end)],
+        'exon_frames': [0],
+    })
+
+
+def _make_rev_transcript(tx_id='NM_T002.1', chrom='chr1',
+                         tx_start=0, tx_end=500,
+                         cds_start=0, cds_end=500,
+                         gene='TESTGENE'):
+    """Return a simple single-exon reverse-strand Transcript."""
+    return make_transcript({
+        'id': tx_id,
+        'chrom': chrom,
+        'strand': '-',
+        'start': tx_start,
+        'end': tx_end,
+        'cds_start': cds_start,
+        'cds_end': cds_end,
+        'gene_name': gene,
+        'exons': [(tx_start, tx_end)],
+        'exon_frames': [0],
+    })
+
+
+def _genome(*args):
+    """Build a MockGenome from alternating key/value arguments.
+
+    Usage::
+
+        _genome(
+            ('chr1', 257, 261), 'CCGT',
+            ('chr1', 258, 261), 'CGT',
+        )
+
+    Each key is a (chrom, 0based_start, 0based_end_exclusive) tuple matching
+    the internal format used by MockGenome / MockChromosome.
+    """
+    it = iter(args)
+    lookup = {k: v for k, v in zip(it, it)}
+    return MockGenome(lookup=lookup, default_seq='N')
+
+
+class TestGetVcfAllele:
+    """
+    Unit tests for get_vcf_allele() verifying the intermediate ref/alt before
+    normalize_variant() is called.
+
+    Key design:
+      * For equal-length delins / block substitutions:
+        get_vcf_allele MUST NOT prepend an anchor base.  The event boundaries
+        are returned as-is so normalize_variant can decide whether anchoring is
+        needed after trimming.
+      * For pure del / ins / dup:
+        get_vcf_allele MUST still prepend the anchor base (ref[0]) to the alt
+        allele, since the alt (or ref) is inherently empty.
+    """
+
+    # ------------------------------------------------------------------
+    # Helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _tx():
+        """Forward-strand transcript: c.N  →  genomic N (1-based, cds_start=0)."""
+        return _make_fwd_transcript()
+
+    @staticmethod
+    def _genome_for(anchor_base, ref_seq, chrom='chr1', anchor_pos=258):
+        """
+        Build a MockGenome where:
+          * 1-based [anchor_pos, anchor_pos+len(ref_seq)] = anchor_base + ref_seq
+          * 1-based [anchor_pos+1, anchor_pos+len(ref_seq)] = ref_seq  (no anchor)
+        get_genomic_sequence calls genome[chrom][start-1:end] (0-based).
+        So 1-based range [258, 261] → 0-based [257, 261).
+        """
+        end_1based = anchor_pos + len(ref_seq)
+        with_anchor_key = (chrom, anchor_pos - 1, end_1based)
+        without_anchor_key = (chrom, anchor_pos, end_1based)
+        return _genome(
+            with_anchor_key, anchor_base + ref_seq,
+            without_anchor_key, ref_seq,
+        )
+
+    # ------------------------------------------------------------------
+    # 1. Equal-length delins: NO anchor in get_vcf_allele output
+    # ------------------------------------------------------------------
+
+    def test_equal_length_delins_no_anchor_in_ref(self):
+        """
+        c.259_261delinsTCT: equal-length (3→3) block substitution.
+        After the fix, get_vcf_allele MUST NOT prepend an anchor to ref.
+        ref should equal the raw genomic sequence CGT (no extra base).
+        """
+        tx = self._tx()
+        # c.259 → genomic 259 (1-based).  anchor = genomic 258 = 'C'.
+        genome = self._genome_for('C', 'CGT')
+        hgvs = HGVSName('NM_T001.1:c.259_261delinsTCT')
+        chrom, start, end, ref, alt = get_vcf_allele(hgvs, genome, tx)
+        assert ref == 'CGT', (
+            "For equal-length delins, ref must be the raw 3-base sequence "
+            "without a VCF anchor; got %r" % ref)
+
+    def test_equal_length_delins_no_anchor_in_alt(self):
+        """
+        c.259_261delinsTCT: alt must equal the stated alt sequence 'TCT',
+        not be prepended with an anchor base.
+        """
+        tx = self._tx()
+        genome = self._genome_for('C', 'CGT')
+        hgvs = HGVSName('NM_T001.1:c.259_261delinsTCT')
+        _, start, _, ref, alt = get_vcf_allele(hgvs, genome, tx)
+        assert alt == 'TCT', (
+            "For equal-length delins, alt must equal the stated sequence "
+            "without an anchor base; got %r" % alt)
+
+    def test_equal_length_delins_start_not_shifted(self):
+        """
+        c.259_261delinsTCT: the returned start position must be 259 (the
+        actual genomic start of the event), not 258 (anchor position).
+        """
+        tx = self._tx()
+        genome = self._genome_for('C', 'CGT')
+        hgvs = HGVSName('NM_T001.1:c.259_261delinsTCT')
+        _, start, _, ref, alt = get_vcf_allele(hgvs, genome, tx)
+        assert start == 259, (
+            "Start must be the event start (259), not the anchor position; "
+            "got %d" % start)
+
+    # ------------------------------------------------------------------
+    # 2. Deletion-dominant delins: also no premature anchor
+    # ------------------------------------------------------------------
+
+    def test_deletion_dominant_delins_no_premature_anchor(self):
+        """
+        c.259_261delinsT: 3-base range replaced by 1 base.
+        get_vcf_allele must NOT add an anchor.  The anchor will be added
+        by normalize_variant → _1bp_pad when trimming empties the alt.
+        """
+        tx = self._tx()
+        genome = self._genome_for('C', 'CGT')
+        hgvs = HGVSName('NM_T001.1:c.259_261delinsT')
+        _, start, _, ref, alt = get_vcf_allele(hgvs, genome, tx)
+        assert ref == 'CGT' and alt == 'T', (
+            "Deletion-dominant delins: expected ref='CGT', alt='T'; "
+            "got ref=%r, alt=%r" % (ref, alt))
+
+    # ------------------------------------------------------------------
+    # 3. Pure deletion: anchor IS required in get_vcf_allele output
+    # ------------------------------------------------------------------
+
+    def test_pure_del_has_anchor_in_alt(self):
+        """
+        c.259_261del: pure deletion — alt is empty, VCF requires anchor.
+        get_vcf_allele must still prepend ref[0] to alt.
+        """
+        tx = self._tx()
+        genome = self._genome_for('C', 'CGT')
+        hgvs = HGVSName('NM_T001.1:c.259_261del')
+        _, start, _, ref, alt = get_vcf_allele(hgvs, genome, tx)
+        assert len(ref) == 4 and alt == ref[0], (
+            "Pure del: ref must be anchor+deleted_seq (4 chars), "
+            "alt must be anchor only; got ref=%r, alt=%r" % (ref, alt))
+
+    def test_pure_del_start_is_anchor_position(self):
+        """
+        c.259_261del: start must be 258 (the anchor position), not 259.
+        """
+        tx = self._tx()
+        genome = self._genome_for('C', 'CGT')
+        hgvs = HGVSName('NM_T001.1:c.259_261del')
+        _, start, _, ref, alt = get_vcf_allele(hgvs, genome, tx)
+        assert start == 258, (
+            "Pure del: start must be anchor position (258); got %d" % start)
+
+    # ------------------------------------------------------------------
+    # 4. Pure insertion: anchor IS required
+    # ------------------------------------------------------------------
+
+    def test_pure_ins_has_anchor_in_alt(self):
+        """
+        c.259_260insACG: pure insertion — ref is a single anchor base.
+        get_vcf_allele must prepend ref[0] to alt.
+        """
+        tx = self._tx()
+        # For c.259_260ins, get_vcf_coords returns an empty interval plus the
+        # anchor.  The anchor is at position 259 (genome['chr1'][258:259]).
+        genome = _genome(
+            ('chr1', 258, 259), 'C',   # anchor only for ins
+            ('chr1', 258, 261), 'CGT',  # broader range just in case
+        )
+        hgvs = HGVSName('NM_T001.1:c.259_260insACG')
+        _, start, _, ref, alt = get_vcf_allele(hgvs, genome, tx)
+        assert alt.startswith(ref[0]), (
+            "Pure ins: alt must start with the anchor base ref[0]; "
+            "got ref=%r, alt=%r" % (ref, alt))
+
+    # ------------------------------------------------------------------
+    # 5. genomic delins (no transcript): same behaviour
+    # ------------------------------------------------------------------
+
+    def test_genomic_equal_length_delins_no_anchor(self):
+        """
+        chr1:g.259_261delinsTCT: genomic HGVS, no transcript needed.
+        get_vcf_allele must NOT add an anchor for the equal-length case.
+        """
+        genome = _genome(
+            ('chr1', 257, 261), 'CCGT',  # anchor(258) + ref(259-261) in 1-based
+            ('chr1', 258, 261), 'CGT',
+        )
+        hgvs = HGVSName('chr1:g.259_261delinsTCT')
+        _, start, _, ref, alt = get_vcf_allele(hgvs, genome, transcript=None)
+        assert ref == 'CGT' and alt == 'TCT', (
+            "Genomic equal-length delins: no anchor expected; "
+            "got ref=%r, alt=%r" % (ref, alt))
+
+    # ------------------------------------------------------------------
+    # 6. Reverse-strand cDNA delins: anchor logic still correct
+    # ------------------------------------------------------------------
+
+    def test_rev_strand_equal_length_delins_no_anchor(self):
+        """
+        Reverse-strand transcript: c.259_261delinsTCT.
+        get_ref_alt revcomps the alt to the forward strand; the result must
+        still not have a spurious anchor prepended.
+        """
+        tx = _make_rev_transcript()
+        # For a 500-bp reverse-strand transcript:
+        # c.259 → genomic 500 - 259 + 1 = 242 (1-based)
+        # c.261 → genomic 500 - 261 + 1 = 240
+        # After get_coords swap: start=240, end=242
+        # get_vcf_coords: start=239, end=242
+        # get_genomic_sequence(239, 242) → genome['chr1'][238:242] = 4 chars
+        genome = _genome(
+            ('chr1', 238, 242), 'CCGT',   # anchor(239) + ref(240-242) in 1-based
+            ('chr1', 239, 242), 'CGT',
+        )
+        hgvs = HGVSName('NM_T002.1:c.259_261delinsTCT')
+        _, start, _, ref, alt = get_vcf_allele(hgvs, genome, tx)
+        # alt on forward strand = revcomp('TCT') = 'AGA'; no anchor.
+        assert ref == 'CGT' and alt == 'AGA', (
+            "Rev-strand equal-length delins: expected ref='CGT', alt='AGA'; "
+            "got ref=%r, alt=%r" % (ref, alt))
+
+
+# ---------------------------------------------------------------------------
+# 13. parse_hgvs_name: full chain end-to-end tests
+# ---------------------------------------------------------------------------
+
+class TestParseHgvsNameEndToEnd:
+    """
+    Full-chain regression tests for parse_hgvs_name() exercising
+    get_vcf_allele() → normalize_variant() with mock transcript and genome.
+
+    The mock transcript uses a simple single-exon forward-strand setup where
+    cDNA c.N maps to genomic position N (since cds_start=0 and tx starts at 0).
+    """
+
+    @staticmethod
+    def _tx():
+        return _make_fwd_transcript()
+
+    @staticmethod
+    def _genome_for(anchor_base, ref_seq, chrom='chr1', anchor_pos=258):
+        end_1based = anchor_pos + len(ref_seq)
+        lookup = {
+            (chrom, anchor_pos - 1, end_1based): anchor_base + ref_seq,
+            (chrom, anchor_pos, end_1based): ref_seq,
+        }
+        return MockGenome(lookup=lookup, default_seq='N')
+
+    # ------------------------------------------------------------------
+    # Main regression: NM_006888.6:c.259_261delinsTCT equivalent
+    # ------------------------------------------------------------------
+
+    def test_equal_length_delins_minimal_vcf(self):
+        """
+        Main regression test.
+
+        c.259_261delinsTCT: CGT → TCT.
+        Common suffix 'T' trims to CG → TC.
+        Expected VCF: ('chr1', 259, 'CG', 'TC').
+
+        This is the equivalent of the bug reported for
+        NM_006888.6:c.259_261delinsTCT which previously produced
+        the incorrect padded result ('chr14', 90403941, 'CCG', 'CTC').
+        """
+        tx = self._tx()
+        genome = self._genome_for('C', 'CGT')
+
+        def get_tx(name):
+            return tx
+
+        result = parse_hgvs_name(
+            'NM_T001.1:c.259_261delinsTCT', genome,
+            get_transcript=get_tx, normalize=True)
+        assert result == ('chr1', 259, 'CG', 'TC'), (
+            "Equal-length delins must produce minimal VCF (no extra anchor); "
+            "got %r" % (result,))
+
+    def test_equal_length_delins_no_common_trim(self):
+        """
+        c.259_261delinsAGA: CGT → AGA (no common prefix or suffix).
+        Expected VCF: ('chr1', 259, 'CGT', 'AGA').
+        """
+        tx = self._tx()
+        genome = self._genome_for('C', 'CGT')
+
+        result = parse_hgvs_name(
+            'NM_T001.1:c.259_261delinsAGA', genome,
+            get_transcript=lambda n: tx, normalize=True)
+        assert result == ('chr1', 259, 'CGT', 'AGA'), (
+            "delins with no common trim must return the full 3-base result; "
+            "got %r" % (result,))
+
+    def test_deletion_dominant_delins_is_anchored(self):
+        """
+        c.259_261delinsT: CGT → T (deletion-dominant).
+        After trimming the common suffix 'T': CG → ''; anchor is added.
+        Expected VCF: position 258, anchored deletion representation.
+        """
+        tx = self._tx()
+        # normalize_variant will need 5' flanking to fetch the anchor.
+        # The anchor is at genomic position 258 = 'C'.
+        # We provide enough sequence around the site.
+        lookup = {
+            ('chr1', 257, 261): 'CCGT',  # anchor=C, ref=CGT
+            ('chr1', 258, 261): 'CGT',
+            # 5' flanking for _1bp_pad (30 bases before position 258)
+            ('chr1', 228, 258): 'C' * 30,
+        }
+        genome = MockGenome(lookup=lookup, default_seq='N')
+
+        result = parse_hgvs_name(
+            'NM_T001.1:c.259_261delinsT', genome,
+            get_transcript=lambda n: tx, normalize=True)
+        # Result must be a deletion; start < 259 (anchored)
+        chrom, start, ref, alt = result
+        assert chrom == 'chr1', "chrom mismatch"
+        assert start < 259, (
+            "Deletion-dominant delins must be left-anchored (start < 259); "
+            "got start=%d" % start)
+        assert len(ref) > len(alt), (
+            "Deletion-dominant delins must have len(ref) > len(alt); "
+            "got ref=%r, alt=%r" % (ref, alt))
+
+    def test_snp_unchanged(self):
+        """
+        c.259A>T: simple SNP.  Unaffected by any of the delins fixes.
+        Expected VCF: ('chr1', 259, 'C', 'T').  (ref from genome = 'C')
+        """
+        tx = self._tx()
+        genome = _genome(
+            ('chr1', 258, 259), 'C',   # genomic 259 = 'C'
+            ('chr1', 257, 261), 'CCGT',
+        )
+        result = parse_hgvs_name(
+            'NM_T001.1:c.259C>T', genome,
+            get_transcript=lambda n: tx, normalize=True)
+        assert result == ('chr1', 259, 'C', 'T'), (
+            "SNP result must be unchanged; got %r" % (result,))
+
+    def test_pure_deletion_still_correct(self):
+        """
+        c.259_261del: pure deletion.  The fix must not break standard dels.
+        """
+        tx = self._tx()
+        lookup = {
+            ('chr1', 257, 261): 'CCGT',
+            ('chr1', 258, 261): 'CGT',
+            ('chr1', 228, 258): 'C' * 30,
+        }
+        genome = MockGenome(lookup=lookup, default_seq='N')
+
+        result = parse_hgvs_name(
+            'NM_T001.1:c.259_261del', genome,
+            get_transcript=lambda n: tx, normalize=True)
+        chrom, start, ref, alt = result
+        assert chrom == 'chr1'
+        assert len(ref) > len(alt), (
+            "Pure deletion must have len(ref) > len(alt); "
+            "got ref=%r, alt=%r" % (ref, alt))
+        assert start < 259, "Pure deletion must be left-anchored"

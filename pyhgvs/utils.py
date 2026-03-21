@@ -420,10 +420,10 @@ class TranscriptLookup(object):
                   transcripts are sorted by genomic span (largest first).
                 - ``'longest'``: Sort purely by genomic span, largest first.
                   MANE status is ignored.
-                - ``None``: No ordering is applied; the list is returned
-                  in insertion order.  Use this when you only need all
-                  transcripts and do not care about their order (avoids the
-                  sorting overhead).
+                - ``'random'``: Return transcripts in insertion order without
+                  sorting (equivalent to ``None``).  Use this when you only
+                  need all transcripts and do not care about their relative
+                  order (avoids the sorting overhead).
 
             return_id: If ``True``, return a list of transcript accessions
                 (``full_name``, e.g. ``'NM_007294.3'``) instead of
@@ -439,11 +439,11 @@ class TranscriptLookup(object):
             ValueError: If *sort_policy* is not one of ``'mane'``,
                 ``'longest'``, or ``'random'``.
         """
-        _VALID_POLICIES = ('mane', 'longest', None)
+        _VALID_POLICIES = ('mane', 'longest', 'random', None)
         if sort_policy not in _VALID_POLICIES:
             raise ValueError(
-                "sort_policy must be one of %r; got %r"
-                % (_VALID_POLICIES, sort_policy))
+                "sort_policy must be one of 'mane', 'longest', 'random', or "
+                "None; got %r" % (sort_policy,))
 
         transcripts = self._by_gene.get(gene_name, [])
         if not transcripts:
@@ -467,7 +467,7 @@ class TranscriptLookup(object):
             transcripts = sorted(transcripts, key=self._transcript_length, reverse=True)
 
         else:
-            # sort_policy == None: return in insertion order; no sort needed.
+            # sort_policy in ('random', None): return in insertion order.
             # Return a copy so callers cannot accidentally mutate the internal
             # index list.
             transcripts = list(transcripts)
