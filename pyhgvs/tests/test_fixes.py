@@ -643,3 +643,129 @@ class TestGetGeneTranscripts:
             for tx in txs
         ]
         assert spans[0] >= spans[1]
+
+
+# ---------------------------------------------------------------------------
+# 11. normalize_variant: block substitution / MNV padding fix
+# ---------------------------------------------------------------------------
+
+class TestNormalizeVariantBlockSubstitution:
+    """
+    normalize_variant must NOT add a 1 bp anchor when all alleles are
+    non-empty after trimming (VCF spec: complex substitutions do not require
+    padding).  True insertions/deletions (empty allele) must still be padded.
+    """
+
+    def _make_pos(self, chrom_start, chrom_stop):
+        from ..models import Position
+        return Position(
+            chrom='chr14',
+            chrom_start=chrom_start,
+            chrom_stop=chrom_stop,
+            is_forward_strand=True,
+        )
+
+    def test_equal_length_delins_no_extra_pad(self):
+        """
+        Equal-length delins (CGT->TCT) after trimming common suffix 'T'
+        gives CG->TC.  No 1 bp anchor should be added because both alleles
+        are non-empty.
+
+        This is the regression test for the bug reported with
+        NM_006888.6:c.259_261delinsTCT which was producing an incorrect
+        extra-padded result.
+        """
+        from ..variants import NormalizedVariant
+        # Simulate get_vcf_allele output: anchor 'C' prepended by
+        # get_vcf_coords/get_vcf_allele, giving ref='CCGT', alt='CTCT'.
+        pos = self._make_pos(100, 104)
+        nv = NormalizedVariant(pos, 'CCGT', ['CTCT'],
+                               seq_5p='AAAAC', seq_3p='GGGG')
+        # After trim prefix 'C' -> ['CGT','TCT'], trim suffix 'T' -> ['CG','TC'].
+        # No 1 bp pad (both alleles non-empty).
+        assert nv.alleles == ['CG', 'TC'], (
+            "Equal-length delins should yield minimal block substitution, "
+            "got %r" % nv.alleles
+        )
+        assert '1bp pad' not in nv.log
+
+    def test_block_substitution_two_chars_no_pad(self):
+        """CG->TC block substitution should not be padded."""
+        from ..variants import NormalizedVariant
+        pos = self._make_pos(100, 102)
+        nv = NormalizedVariant(pos, 'CG', ['TC'],
+                               seq_5p='AAAAC', seq_3p='GGGG')
+        assert nv.alleles == ['CG', 'TC']
+        assert '1bp pad' not in nv.log
+
+    def test_snp_not_padded(self):
+        """SNPs must never be padded (unchanged by this fix, regression)."""
+        from ..variants import NormalizedVariant
+        pos = self._make_pos(100, 101)
+        nv = NormalizedVariant(pos, 'C', ['T'],
+                               seq_5p='AAAAC', seq_3p='GGGG')
+        assert nv.alleles == ['C', 'T']
+        assert '1bp pad' not in nv.log
+
+    def test_pure_insertion_still_padded(self):
+        """
+        A true insertion (ref is empty) must still receive the 1 bp anchor
+        base (VCF requirement for indels).
+        """
+        from ..variants import NormalizedVariant
+        pos = self._make_pos(100, 100)
+        nv = NormalizedVariant(pos, '', ['TCT'],
+                               seq_5p='AAAAC', seq_3p='GGGG')
+        # Should be padded: alleles start with same base.
+        assert nv.alleles[0] == nv.alleles[1][0], (
+            "Insertion anchor base should be the same for ref and alt")
+        assert '1bp pad' in nv.log
+
+    def test_pure_deletion_still_padded(self):
+        """
+        A true deletion (alt is empty after trimming) must still receive the
+        1 bp anchor base (VCF requirement for indels).
+        """
+        from ..variants import NormalizedVariant
+        pos = self._make_pos(100, 103)
+        nv = NormalizedVariant(pos, 'CGT', [''],
+                               seq_5p='AAAAC', seq_3p='GGGG')
+        assert '1bp pad' in nv.log
+        assert len(nv.alleles[1]) == 1, (
+            "After padding, deleted allele should be a single anchor base")
+
+    def test_unequal_delins_still_correct(self):
+        """
+        A non-equal-length delins (e.g. 3 del, 1 ins) correctly represents
+        the event without spurious extra padding.
+
+        Simulate anchor+ref='CCGT', anchor+alt='CT' (3-base ref, 1-base ins,
+        both including the 'C' anchor prepended by get_vcf_coords/get_vcf_allele).
+        Trimming proceeds: prefix 'C' -> ['CGT','T'] -> suffix 'T' ->
+        ['CG', ''].  alt becomes empty, so empty_seq=True and 1 bp padding
+        IS applied.  After padding both alleles are non-empty.
+        """
+        from ..variants import NormalizedVariant
+        pos = self._make_pos(100, 104)
+        nv = NormalizedVariant(pos, 'CCGT', ['CT'],
+                               seq_5p='AAAAC', seq_3p='GGGG')
+        assert '' not in nv.alleles, "No allele should remain empty after padding"
+        assert '1bp pad' in nv.log
+
+    def test_triallelic_block_substitution_no_pad(self):
+        """
+        A triallelic variant where all post-trim alleles are non-empty must
+        not be padded (regression: the old uniq_starts>1 condition padded
+        even valid multi-allelic block substitutions).
+
+        'TGGC' vs 'TGGA' vs 'TGAC': trim 'TG' prefix (added by
+        get_vcf_coords/get_vcf_allele) -> 'GC','GA','AC'.  None is empty
+        so no 1 bp anchor is added.
+        """
+        from ..variants import NormalizedVariant
+        pos = self._make_pos(100, 104)
+        nv = NormalizedVariant(pos, 'TGGC', ['TGGA', 'TGAC'],
+                               seq_5p='AAAATG', seq_3p='GGGG')
+        assert '1bp pad' not in nv.log
+        # All alleles non-empty.
+        assert all(a for a in nv.alleles)

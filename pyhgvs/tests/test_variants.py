@@ -42,9 +42,11 @@ _normalize_tests = [
      ('chr17', 41246250, 'G', ['A']),
      'left'),
 
-    # Trim common prefix, triallelic
+    # Trim common prefix, triallelic.
+    # After stripping the shared 'TG' prefix the alleles are 'GC'/'GA'/'AC'.
+    # None is empty, so no 1 bp anchor is added (VCF complex-substitution rule).
     (('chr17', 41246248, 'TGGC', ['TGGA', 'TGAC']),
-     ('chr17', 41246249, 'GGC', ['GAC', 'GGA']),
+     ('chr17', 41246250, 'GC', ['AC', 'GA']),
      'left'),
 
     # Left edge of chromosome left justify, right pad.

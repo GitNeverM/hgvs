@@ -267,37 +267,46 @@ class NormalizedVariant(object):
     def _1bp_pad(self):
         """
         Ensure no alleles are the empty string by padding to the left 1bp.
+
+        Padding is only required when at least one allele is empty (a true
+        insertion or deletion).  For block substitutions / MNVs where all
+        alleles are non-empty after trimming, the VCF specification for
+        complex substitutions does *not* require an anchor base, so no
+        padding is added in that case.
         """
         # Padding is only required for INDELs.
         if self.molecular_class != "INDEL":
             return
 
-        # Pad sequences with one 5-prime base before the mutation event.
+        # Only pad when there is an empty allele (true insertion or deletion).
+        # Block substitutions where all alleles are non-empty do not need
+        # the indel-style 1 bp anchor base.
         empty_seq = any(not allele for allele in self.alleles)
-        uniq_starts = set(allele[0] for allele in self.alleles if allele)
-        if empty_seq or len(uniq_starts) > 1:
-            # Fetch more 5p flanking sequence if needed.
-            if self.genome and self.seq_5p == '':
-                start = self.position.chrom_start
-                self.seq_5p = get_sequence(
-                    self.genome, self.position.chrom, start - 5, start)
+        if not empty_seq:
+            return
 
-            self.log.append('1bp pad')
-            if self.seq_5p:
-                for i, allele in enumerate(self.alleles):
-                    self.alleles[i] = self.seq_5p[-1] + self.alleles[i]
+        # Fetch more 5p flanking sequence if needed.
+        if self.genome and self.seq_5p == '':
+            start = self.position.chrom_start
+            self.seq_5p = get_sequence(
+                self.genome, self.position.chrom, start - 5, start)
 
-                self.seq_5p = self.seq_5p[:-1]
-                self.position.chrom_start -= 1
-            else:
-                # According to VCF standard, if there is no 5prime sequence,
-                # use 3prime sequence instead.
-                assert self.seq_3p
-                for i, allele in enumerate(self.alleles):
-                    self.alleles[i] = self.alleles[i] + self.seq_3p[0]
+        self.log.append('1bp pad')
+        if self.seq_5p:
+            for i, allele in enumerate(self.alleles):
+                self.alleles[i] = self.seq_5p[-1] + self.alleles[i]
 
-                self.seq_3p = self.seq_3p[1:]
-                self.position.chrom_stop += 1
+            self.seq_5p = self.seq_5p[:-1]
+            self.position.chrom_start -= 1
+        else:
+            # According to VCF standard, if there is no 5prime sequence,
+            # use 3prime sequence instead.
+            assert self.seq_3p
+            for i, allele in enumerate(self.alleles):
+                self.alleles[i] = self.alleles[i] + self.seq_3p[0]
+
+            self.seq_3p = self.seq_3p[1:]
+            self.position.chrom_stop += 1
 
         if len(set(a[0] for a in self.alleles)) != 1:
             raise AssertionError(
